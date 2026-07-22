@@ -9,6 +9,9 @@ export type VaultNote = {
   priority: string;
   source: string;
   createdAt: string; // ISO
+  dueAt?: string | null; // ISO
+  entities?: { name: string; kind: string }[];
+  links?: { id: string; title: string }[];
 };
 
 function repoParts() {
@@ -25,22 +28,31 @@ function yamlList(items: string[]): string {
 }
 
 function renderMarkdown(note: VaultNote): string {
-  const frontmatter = [
+  const fm: string[] = [
     "---",
     `id: ${note.id}`,
     `type: ${note.type}`,
     `tags:${yamlList(note.tags)}`,
     `priority: ${note.priority}`,
-    `source: ${note.source}`,
-    `created_at: ${note.createdAt}`,
-    "---",
-    "",
-    `# ${note.title}`,
-    "",
-    note.body.trim(),
-    "",
-  ].join("\n");
-  return frontmatter;
+  ];
+  if (note.dueAt) fm.push(`due: ${note.dueAt}`);
+  if (note.entities && note.entities.length) {
+    fm.push(`entities:${yamlList(note.entities.map((e) => `${e.name} (${e.kind})`))}`);
+  }
+  fm.push(`source: ${note.source}`, `created_at: ${note.createdAt}`, "---");
+
+  const parts = [fm.join("\n"), "", `# ${note.title}`, "", note.body.trim(), ""];
+
+  if (note.links && note.links.length) {
+    parts.push("## Related", "");
+    for (const l of note.links) {
+      // vault files are named {id}.md, so [[id]] resolves in Obsidian.
+      parts.push(`- [[${l.id}|${l.title}]]`);
+    }
+    parts.push("");
+  }
+
+  return parts.join("\n");
 }
 
 // Writes one markdown file per note to the vault repo and returns its path.
