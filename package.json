@@ -1,14 +1,20 @@
 {
-  "name": "obx-tmp",
+  "name": "obsidian-x",
   "version": "0.1.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "icons": "node scripts/gen-icons.mjs",
+    "setup": "node --env-file=.env.local scripts/setup.mjs",
+    "smoke": "node --env-file=.env.local scripts/smoke.mjs"
   },
   "dependencies": {
+    "@octokit/rest": "^22.0.1",
+    "@supabase/ssr": "^0.12.3",
+    "@supabase/supabase-js": "^2.110.8",
     "next": "16.2.11",
     "react": "19.2.4",
     "react-dom": "19.2.4"
@@ -20,7 +26,9 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.2.11",
+    "supabase": "^2.109.1",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vercel": "^56.5.0"
   }
 }
