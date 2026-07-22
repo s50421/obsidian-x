@@ -7,15 +7,15 @@ export type Classification = {
   priority: "low" | "medium" | "high";
 };
 
+// Must match the items_type_check constraint in the database.
 const ALLOWED_TYPES = [
   "note",
   "task",
   "idea",
+  "shopping",
   "reference",
   "person",
   "event",
-  "question",
-  "journal",
 ];
 const ALLOWED_PRIORITY = ["low", "medium", "high"];
 

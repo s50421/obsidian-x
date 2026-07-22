@@ -43,7 +43,7 @@ export async function POST(req: Request) {
       type: c.type,
       title: c.title,
       body: text,
-      status: "inbox",
+      status: "open",
       priority: c.priority,
       tags: c.tags,
       source: "typed",

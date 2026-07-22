@@ -74,7 +74,7 @@ const raw = await chat(
     {
       role: "system",
       content:
-        'Return ONLY JSON: {"type": one of ["note","task","idea","reference","person","event","question","journal"], "title": 3-8 words, "tags": 1-5 kebab-case, "priority": one of ["low","medium","high"]}.',
+        'Return ONLY JSON: {"type": one of ["note","task","idea","shopping","reference","person","event"], "title": 3-8 words, "tags": 1-5 kebab-case, "priority": one of ["low","medium","high"]}.',
     },
     { role: "user", content: note },
   ],
@@ -100,7 +100,7 @@ const { data: item, error: ie } = await admin
     type: c.type || "note",
     title: c.title || "Untitled",
     body: note,
-    status: "inbox",
+    status: "open",
     priority: c.priority || "medium",
     tags: c.tags || [],
     source: "smoke-test",
