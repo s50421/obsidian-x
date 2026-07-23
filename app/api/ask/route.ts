@@ -5,6 +5,7 @@ import { isOwner } from "@/lib/owner";
 import { embed } from "@/lib/embed";
 import { chat } from "@/lib/openrouter";
 import { vaultUrl } from "@/lib/vault";
+import { logLlmUsage } from "@/lib/usage";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -73,7 +74,7 @@ export async function POST(req: Request) {
     .map((m, i) => `[${i + 1}] "${m.title}" (${m.type})\n${m.body}`)
     .join("\n\n");
 
-  const answer = await chat(
+  const { content: answer, usage } = await chat(
     process.env.OPENROUTER_ANSWER_MODEL!,
     [
       {
@@ -87,6 +88,8 @@ export async function POST(req: Request) {
     ],
     { temperature: 0.2 }
   );
+
+  await logLlmUsage(admin, user.id, "answer", usage);
 
   return NextResponse.json({ answer, sources });
 }

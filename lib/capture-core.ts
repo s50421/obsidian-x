@@ -3,6 +3,7 @@ import { enrich } from "@/lib/enrich";
 import { embed } from "@/lib/embed";
 import { writeVaultNote, vaultUrl } from "@/lib/vault";
 import { logAudit } from "@/lib/audit";
+import { logLlmUsage } from "@/lib/usage";
 
 // Similarity thresholds (cosine, 0..1) for normalized gte-small vectors.
 const LINK_THRESHOLD = 0.4; // loosely related -> auto-link
@@ -51,7 +52,8 @@ export async function captureText(
 ): Promise<CaptureOutcome> {
   const admin = createAdminClient();
   const today = new Date().toISOString().slice(0, 10);
-  const { items: enriched, confidence } = await enrich(text, today);
+  const { items: enriched, confidence, usage } = await enrich(text, today);
+  await logLlmUsage(admin, userId, "enrich", usage);
 
   const created: CreatedItem[] = [];
 

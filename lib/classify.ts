@@ -30,7 +30,7 @@ export async function classify(text: string): Promise<Classification> {
     `"tags": array of 1-5 lowercase kebab-case topic tags, ` +
     `"priority": one of ${JSON.stringify(ALLOWED_PRIORITY)}}.`;
 
-  const raw = await chat(
+  const { content: raw } = await chat(
     model,
     [
       { role: "system", content: system },

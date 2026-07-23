@@ -1,4 +1,4 @@
-import { chat, extractJson } from "@/lib/openrouter";
+import { chat, extractJson, type Usage } from "@/lib/openrouter";
 
 // v1.2 enrichment: one OpenRouter call cleans, (optionally) splits, and
 // classifies a raw capture, resolving due dates and pulling out entities.
@@ -15,7 +15,7 @@ export type EnrichedItem = {
   entities: Entity[];
 };
 
-export type EnrichResult = { items: EnrichedItem[]; confidence: number };
+export type EnrichResult = { items: EnrichedItem[]; confidence: number; usage: Usage };
 
 // Must match the items_* check constraints in the database.
 const ALLOWED_TYPES = ["note", "task", "idea", "shopping", "reference", "person", "event"];
@@ -51,7 +51,7 @@ export async function enrich(text: string, todayISO: string): Promise<EnrichResu
     `}\n` +
     `Split into MULTIPLE items ONLY if the note clearly holds separate, unrelated thoughts; otherwise return exactly one item.`;
 
-  const rawText = await chat(
+  const { content: rawText, usage } = await chat(
     model,
     [
       { role: "system", content: system },
@@ -72,6 +72,7 @@ export async function enrich(text: string, todayISO: string): Promise<EnrichResu
   return {
     items: items.length ? items : [sanitizeItem({}, text)],
     confidence: Number.isFinite(confidence) ? confidence : 0.6,
+    usage,
   };
 }
 

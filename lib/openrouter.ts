@@ -12,17 +12,26 @@ type ChatOptions = {
   maxTokens?: number;
 };
 
+export type Usage = {
+  model: string | null;
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
+  total_tokens: number | null;
+  cost_usd: number | null;
+};
+
+export type ChatResult = { content: string; usage: Usage };
+
 export async function chat(
   model: string,
   messages: ChatMessage[],
   opts: ChatOptions = {}
-): Promise<string> {
+): Promise<ChatResult> {
   const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
       "Content-Type": "application/json",
-      // Optional attribution headers OpenRouter recommends.
       "HTTP-Referer": process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000",
       "X-Title": "Obsidian-X",
     },
@@ -31,6 +40,8 @@ export async function chat(
       messages,
       temperature: opts.temperature ?? 0.2,
       max_tokens: opts.maxTokens,
+      // Ask OpenRouter to include token + cost accounting in the response.
+      usage: { include: true },
       ...(opts.json ? { response_format: { type: "json_object" } } : {}),
     }),
   });
@@ -41,7 +52,18 @@ export async function chat(
   }
 
   const data = await res.json();
-  return data?.choices?.[0]?.message?.content ?? "";
+  const u = data?.usage ?? {};
+  return {
+    content: data?.choices?.[0]?.message?.content ?? "",
+    usage: {
+      model: data?.model ?? model,
+      prompt_tokens: typeof u.prompt_tokens === "number" ? u.prompt_tokens : null,
+      completion_tokens:
+        typeof u.completion_tokens === "number" ? u.completion_tokens : null,
+      total_tokens: typeof u.total_tokens === "number" ? u.total_tokens : null,
+      cost_usd: typeof u.cost === "number" ? u.cost : null,
+    },
+  };
 }
 
 // Parse a JSON object out of a model response, tolerating stray prose or fences.
