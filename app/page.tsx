@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation";
+import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
 import { isOwner } from "@/lib/owner";
 import Capture from "./components/Capture";
@@ -24,14 +25,22 @@ export default async function Home() {
           <h1 className="text-xl font-semibold tracking-tight">Obsidian-X</h1>
           <p className="text-xs opacity-60">{user.email}</p>
         </div>
-        <form action="/auth/signout" method="post">
-          <button
-            type="submit"
+        <div className="flex items-center gap-2">
+          <Link
+            href="/ops"
             className="rounded-md border border-black/15 px-3 py-1.5 text-xs opacity-70 transition hover:opacity-100 dark:border-white/20"
           >
-            Sign out
-          </button>
-        </form>
+            Ops
+          </Link>
+          <form action="/auth/signout" method="post">
+            <button
+              type="submit"
+              className="rounded-md border border-black/15 px-3 py-1.5 text-xs opacity-70 transition hover:opacity-100 dark:border-white/20"
+            >
+              Sign out
+            </button>
+          </form>
+        </div>
       </header>
 
       <div className="space-y-10">
