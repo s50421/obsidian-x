@@ -93,3 +93,19 @@ export function vaultUrl(path: string): string {
   const { owner, repo, branch } = repoParts();
   return `https://github.com/${owner}/${repo}/blob/${branch}/${path}`;
 }
+
+// Remove a note's markdown file from the vault (used by review merge/delete).
+export async function deleteVaultNote(path: string): Promise<void> {
+  const { owner, repo, branch } = repoParts();
+  const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
+  const existing = await octokit.repos.getContent({ owner, repo, path, ref: branch });
+  if (Array.isArray(existing.data) || !("sha" in existing.data)) return;
+  await octokit.repos.deleteFile({
+    owner,
+    repo,
+    path,
+    message: `remove note ${path}`,
+    sha: existing.data.sha,
+    branch,
+  });
+}

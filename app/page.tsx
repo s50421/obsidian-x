@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { isOwner } from "@/lib/owner";
 import Capture from "./components/Capture";
+import Review from "./components/Review";
 import Ask from "./components/Ask";
 
 export const dynamic = "force-dynamic";
@@ -35,6 +36,7 @@ export default async function Home() {
 
       <div className="space-y-10">
         <Capture />
+        <Review />
         <Ask />
       </div>
     </main>

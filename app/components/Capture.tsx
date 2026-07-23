@@ -56,6 +56,8 @@ export default function Capture() {
       if (!res.ok) throw new Error(data.error || `save failed (${res.status})`);
       setResult(data);
       setText("");
+      // Let the Review section refresh if this capture flagged anything.
+      window.dispatchEvent(new Event("obx:captured"));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -113,7 +115,7 @@ export default function Capture() {
 
               {c.needs_review && (
                 <div className="mt-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-xs text-amber-700 dark:text-amber-400">
-                  Needs review — {c.review_reason ?? "please confirm"} · see the Review tab
+                  Needs review — {c.review_reason ?? "please confirm"} · see Review below
                 </div>
               )}
 
