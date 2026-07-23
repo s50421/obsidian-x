@@ -1,23 +1,10 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { createAdminClient } from "@/lib/supabase/admin";
 import { isOwner } from "@/lib/owner";
-import { embed } from "@/lib/embed";
-import { chat } from "@/lib/openrouter";
-import { vaultUrl } from "@/lib/vault";
-import { logLlmUsage } from "@/lib/usage";
+import { answerQuestion } from "@/lib/ask-core";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-type MatchRow = {
-  id: string;
-  title: string;
-  type: string;
-  body: string;
-  vault_path: string | null;
-  sensitive: boolean;
-};
 
 export async function POST(req: Request) {
   const supabase = await createClient();
@@ -39,62 +26,13 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "empty question" }, { status: 400 });
   }
 
-  const admin = createAdminClient();
-
-  const qEmbedding = await embed(question);
-  const { data: matches, error } = await admin.rpc("match_items", {
-    query_embedding: qEmbedding,
-    match_count: 8,
-    owner: user.id,
-  });
-  if (error) {
+  try {
+    const result = await answerQuestion(user.id, question);
+    return NextResponse.json(result);
+  } catch (e) {
     return NextResponse.json(
-      { error: `retrieval failed: ${error.message}` },
+      { error: e instanceof Error ? e.message : String(e) },
       { status: 500 }
     );
   }
-
-  const rows = (matches ?? []) as MatchRow[];
-  const sources = rows.map((m, i) => ({
-    n: i + 1,
-    id: m.id,
-    title: m.title,
-    type: m.type,
-    vault_path: m.vault_path,
-    vault_url: m.vault_path ? vaultUrl(m.vault_path) : null,
-  }));
-
-  if (rows.length === 0) {
-    return NextResponse.json({
-      answer: "I don't have any notes about that yet.",
-      sources: [],
-    });
-  }
-
-  const context = rows
-    .map((m, i) => {
-      // Sensitive items are retrievable but their body is withheld from the cloud model.
-      const body = m.sensitive ? "(sensitive note — body withheld)" : m.body;
-      return `[${i + 1}] "${m.title}" (${m.type})\n${body}`;
-    })
-    .join("\n\n");
-
-  const { content: answer, usage } = await chat(
-    process.env.OPENROUTER_ANSWER_MODEL!,
-    [
-      {
-        role: "system",
-        content:
-          "You are the user's second brain. Answer the question using ONLY the notes provided. " +
-          "Cite the notes you use inline with their bracketed numbers like [1], [2]. " +
-          "If the notes don't contain the answer, say so plainly. Be concise.",
-      },
-      { role: "user", content: `Notes:\n${context}\n\nQuestion: ${question}` },
-    ],
-    { temperature: 0.2 }
-  );
-
-  await logLlmUsage(admin, user.id, "answer", usage);
-
-  return NextResponse.json({ answer, sources });
 }

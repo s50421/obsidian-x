@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { ownerEmail } from "@/lib/owner";
 import { isCronAuthorized } from "@/lib/cron";
-import { notifyTelegram } from "@/lib/telegram";
+import { sendMessage, type InlineKeyboard } from "@/lib/telegram";
 import { fetchUpcomingEvents } from "@/lib/calendar";
 import { logAudit } from "@/lib/audit";
 
@@ -38,7 +38,7 @@ export async function GET(req: Request) {
   const in24 = new Date(Date.now() + 24 * 3600 * 1000).toISOString();
   const { data: dueItems } = await admin
     .from("items")
-    .select("title,due_at")
+    .select("id,title,due_at")
     .eq("user_id", owner.id)
     .eq("status", "open")
     .is("valid_to", null)
@@ -72,7 +72,16 @@ export async function GET(req: Request) {
     `*Next 24h (${events.length}):*\n${eventsText}\n\n` +
     `*Due soon (${due.length}):*\n${dueText}`;
 
-  await notifyTelegram(brief);
+  // One ✓ Done button per due item — tap to complete straight from the brief.
+  const reply_markup: InlineKeyboard | undefined = due.length
+    ? {
+        inline_keyboard: due.map((d) => [
+          { text: `✓ ${d.title.slice(0, 40)}`, callback_data: `done:${d.id}` },
+        ]),
+      }
+    : undefined;
+
+  await sendMessage(brief, { reply_markup });
   await logAudit(admin, {
     user_id: owner.id,
     action: "morning_brief",
