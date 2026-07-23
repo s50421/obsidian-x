@@ -1,9 +1,10 @@
 import { createAdminClient } from "@/lib/supabase/admin";
-import { enrich } from "@/lib/enrich";
+import { enrich, type EnrichedItem } from "@/lib/enrich";
 import { embed } from "@/lib/embed";
 import { writeVaultNote, vaultUrl } from "@/lib/vault";
 import { logAudit } from "@/lib/audit";
 import { logLlmUsage } from "@/lib/usage";
+import { detectSensitive } from "@/lib/sensitivity";
 
 // Similarity thresholds (cosine, 0..1) for normalized gte-small vectors.
 const LINK_THRESHOLD = 0.4; // loosely related -> auto-link
@@ -51,9 +52,24 @@ export async function captureText(
   source: string
 ): Promise<CaptureOutcome> {
   const admin = createAdminClient();
+  const { sensitive, text: cleanText } = detectSensitive(text);
   const today = new Date().toISOString().slice(0, 10);
-  const { items: enriched, confidence, usage } = await enrich(text, today);
-  await logLlmUsage(admin, userId, "enrich", usage);
+
+  let enriched: EnrichedItem[];
+  let confidence: number;
+  if (sensitive) {
+    // Sensitive: no third-party LLM. Minimal local classification only.
+    const title = cleanText.split("\n")[0].slice(0, 60).trim() || "Private note";
+    enriched = [
+      { title, type: "note", body: cleanText, tags: ["private"], priority: "medium", due_date: null, entities: [] },
+    ];
+    confidence = 1;
+  } else {
+    const r = await enrich(cleanText, today);
+    enriched = r.items;
+    confidence = r.confidence;
+    await logLlmUsage(admin, userId, "enrich", r.usage);
+  }
 
   const created: CreatedItem[] = [];
 
@@ -95,6 +111,7 @@ export async function captureText(
         priority: it.priority,
         tags: it.tags,
         source,
+        sensitive,
         embedding,
         created_at: createdAt,
         valid_from: createdAt,
@@ -144,6 +161,7 @@ export async function captureText(
       detail: {
         type: item.type,
         source,
+        sensitive,
         needs_review: needsReview,
         split: enriched.length > 1,
       },

@@ -16,6 +16,7 @@ type MatchRow = {
   type: string;
   body: string;
   vault_path: string | null;
+  sensitive: boolean;
 };
 
 export async function POST(req: Request) {
@@ -71,7 +72,11 @@ export async function POST(req: Request) {
   }
 
   const context = rows
-    .map((m, i) => `[${i + 1}] "${m.title}" (${m.type})\n${m.body}`)
+    .map((m, i) => {
+      // Sensitive items are retrievable but their body is withheld from the cloud model.
+      const body = m.sensitive ? "(sensitive note — body withheld)" : m.body;
+      return `[${i + 1}] "${m.title}" (${m.type})\n${body}`;
+    })
     .join("\n\n");
 
   const { content: answer, usage } = await chat(
