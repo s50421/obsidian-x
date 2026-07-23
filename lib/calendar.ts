@@ -12,14 +12,29 @@ export type CalEvent = {
 // (e.g. GOOGLE_CALENDAR_ICAL_URL_Meetings, ICLOUD_CALENDAR_ICAL_URL_Personal).
 export function getCalendarUrls(): { name: string; url: string }[] {
   const out: { name: string; url: string }[] = [];
+  // Individual named vars (used locally): GOOGLE_/ICLOUD_CALENDAR_ICAL_URL_<Name>.
   for (const [k, v] of Object.entries(process.env)) {
-    if (k.includes("CALENDAR_ICAL_URL") && v) {
+    if (k.includes("CALENDAR_ICAL_URL") && k !== "CALENDAR_ICAL_URLS" && v) {
       const name =
         k.replace(/^(?:GOOGLE|ICLOUD)_/i, "").replace(/^CALENDAR_ICAL_URL_?/i, "") || k;
       out.push({ name: name.replace(/_/g, " ").trim() || "Calendar", url: v });
     }
   }
-  return out;
+  // Consolidated bundle (used in prod = one env var): lines of "name|url".
+  const bundle = process.env.CALENDAR_ICAL_URLS;
+  if (bundle) {
+    for (const raw of bundle.split(/\n|;;/)) {
+      const line = raw.trim();
+      if (!line) continue;
+      const sep = line.indexOf("|");
+      const name = sep >= 0 ? line.slice(0, sep).trim() : "Calendar";
+      const url = sep >= 0 ? line.slice(sep + 1).trim() : line;
+      if (url) out.push({ name: name || "Calendar", url });
+    }
+  }
+  // De-dupe by url (in case both forms are present).
+  const seen = new Set<string>();
+  return out.filter((c) => (seen.has(c.url) ? false : (seen.add(c.url), true)));
 }
 
 function toHttps(u: string): string {
