@@ -28,6 +28,9 @@
 .idea/
 .venv/
 
+# cross-session instruction / planning files — local only, may contain secrets
+/instructions/
+
 # debug
 npm-debug.log*
 yarn-debug.log*
