@@ -3,5 +3,6 @@
 .venv
 .idea
 .vercel
+instructions
 supabase/.temp
 supabase/.branches
