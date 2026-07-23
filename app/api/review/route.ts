@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { isOwner } from "@/lib/owner";
 import { deleteVaultNote } from "@/lib/vault";
+import { logAudit } from "@/lib/audit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -70,7 +71,7 @@ export async function POST(req: Request) {
   // Scope every action to the owner's own row.
   const { data: item } = await admin
     .from("items")
-    .select("id, vault_path")
+    .select("id, vault_path, dup_candidate")
     .eq("id", id)
     .eq("user_id", user.id)
     .single();
@@ -81,16 +82,41 @@ export async function POST(req: Request) {
       .from("items")
       .update({ needs_review: false, review_reason: null, dup_candidate: null })
       .eq("id", id);
+    await logAudit(admin, {
+      user_id: user.id,
+      item_id: id,
+      action: "review_approve",
+      actor: "user",
+    });
   } else if (action === "merge") {
-    // Keep the original; archive this duplicate and drop its vault projection.
+    // Keep the original; bi-temporally supersede this duplicate + drop its vault projection.
     await admin
       .from("items")
-      .update({ status: "archived", needs_review: false, review_reason: null })
+      .update({
+        status: "archived",
+        needs_review: false,
+        review_reason: null,
+        valid_to: new Date().toISOString(),
+        superseded_by: item.dup_candidate ?? null,
+      })
       .eq("id", id);
     if (item.vault_path) await deleteVaultNote(item.vault_path).catch(() => {});
+    await logAudit(admin, {
+      user_id: user.id,
+      item_id: id,
+      action: "review_merge",
+      actor: "user",
+      detail: { superseded_by: item.dup_candidate },
+    });
   } else if (action === "delete") {
     await admin.from("items").delete().eq("id", id);
     if (item.vault_path) await deleteVaultNote(item.vault_path).catch(() => {});
+    await logAudit(admin, {
+      user_id: user.id,
+      item_id: id,
+      action: "review_delete",
+      actor: "user",
+    });
   }
 
   return NextResponse.json({ ok: true });

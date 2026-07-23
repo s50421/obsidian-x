@@ -2,6 +2,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { enrich } from "@/lib/enrich";
 import { embed } from "@/lib/embed";
 import { writeVaultNote, vaultUrl } from "@/lib/vault";
+import { logAudit } from "@/lib/audit";
 
 // Similarity thresholds (cosine, 0..1) for normalized gte-small vectors.
 const LINK_THRESHOLD = 0.4; // loosely related -> auto-link
@@ -132,6 +133,19 @@ export async function captureText(
     } catch (e) {
       vaultError = e instanceof Error ? e.message : String(e);
     }
+
+    await logAudit(admin, {
+      user_id: userId,
+      item_id: item.id,
+      action: source === "email" ? "email_capture" : "capture",
+      actor: source === "email" ? "email" : "user",
+      detail: {
+        type: item.type,
+        source,
+        needs_review: needsReview,
+        split: enriched.length > 1,
+      },
+    });
 
     created.push({
       item,
