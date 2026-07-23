@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { enqueue, queueSize, flushQueue } from "@/lib/offline-queue";
 
 type Entity = { name: string; kind: string };
 type LinkRef = { id: string; title: string };
@@ -39,13 +40,43 @@ export default function Capture() {
   const [saving, setSaving] = useState(false);
   const [result, setResult] = useState<CaptureResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [pending, setPending] = useState(0);
 
-  async function save() {
+  // Keep the pending badge in sync and flush the queue when possible.
+  useEffect(() => {
+    const sync = () => setPending(queueSize());
+    sync();
+    window.addEventListener("obx:queue", sync);
+    const tryFlush = async () => {
+      const n = await flushQueue();
+      if (n > 0) setNotice(`Synced ${n} offline ${n === 1 ? "note" : "notes"}.`);
+    };
+    window.addEventListener("online", tryFlush);
+    tryFlush();
+    return () => {
+      window.removeEventListener("obx:queue", sync);
+      window.removeEventListener("online", tryFlush);
+    };
+  }, []);
+
+  const save = useCallback(async () => {
     const body = text.trim();
     if (!body || saving) return;
     setSaving(true);
     setError(null);
     setResult(null);
+    setNotice(null);
+
+    // Offline: queue immediately, don't even try the network.
+    if (typeof navigator !== "undefined" && !navigator.onLine) {
+      enqueue(body);
+      setText("");
+      setNotice("You're offline — saved locally, will sync when you're back online.");
+      setSaving(false);
+      return;
+    }
+
     try {
       const res = await fetch("/api/capture", {
         method: "POST",
@@ -56,20 +87,33 @@ export default function Capture() {
       if (!res.ok) throw new Error(data.error || `save failed (${res.status})`);
       setResult(data);
       setText("");
-      // Let the Review section refresh if this capture flagged anything.
       window.dispatchEvent(new Event("obx:captured"));
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      // Network failure — queue it rather than lose it.
+      if (typeof navigator !== "undefined" && !navigator.onLine) {
+        enqueue(body);
+        setText("");
+        setNotice("Connection dropped — saved locally, will sync later.");
+      } else {
+        setError(e instanceof Error ? e.message : String(e));
+      }
     } finally {
       setSaving(false);
     }
-  }
+  }, [text, saving]);
 
   return (
     <section>
-      <h2 className="mb-2 text-sm font-medium uppercase tracking-wide opacity-60">
-        Capture
-      </h2>
+      <div className="mb-2 flex items-center justify-between">
+        <h2 className="text-sm font-medium uppercase tracking-wide opacity-60">
+          Capture
+        </h2>
+        {pending > 0 && (
+          <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-xs text-amber-700 dark:text-amber-400">
+            {pending} queued offline
+          </span>
+        )}
+      </div>
       <textarea
         value={text}
         onChange={(e) => setText(e.target.value)}
@@ -89,6 +133,7 @@ export default function Capture() {
           {saving ? "Saving…" : "Save"}
         </button>
         {error && <span className="text-sm text-red-500">{error}</span>}
+        {notice && <span className="text-sm opacity-70">{notice}</span>}
       </div>
 
       {result && (
