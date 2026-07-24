@@ -27,6 +27,12 @@ export default async function Home() {
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2">
           <Link
+            href="/graph"
+            className="rounded-md border border-black/15 px-3 py-1.5 text-xs opacity-70 transition hover:opacity-100 dark:border-white/20"
+          >
+            Graph
+          </Link>
+          <Link
             href="/interview"
             className="rounded-md border border-black/15 px-3 py-1.5 text-xs opacity-70 transition hover:opacity-100 dark:border-white/20"
           >
