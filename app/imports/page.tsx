@@ -25,8 +25,8 @@ export default async function ImportsPage() {
         </Link>
       </header>
       <p className="mb-4 text-sm opacity-60">
-        Your Apple Notes import is on hold. Pick the ones worth keeping — <b>Activate</b> makes
-        them searchable; <b>Remove</b> deletes them for good.
+        Your imports are on hold. Pick a source, then choose what&apos;s worth keeping —{" "}
+        <b>Activate</b> makes items searchable; <b>Remove</b> deletes them for good.
       </p>
       <ImportsReview />
     </main>

@@ -2,9 +2,17 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-type Row = { id: string; title: string; type: string; tags: string[]; snippet: string };
+type Row = { id: string; title: string; type: string; source: string; tags: string[]; snippet: string };
 
 const TYPES = ["", "note", "task", "idea", "shopping", "reference", "person", "event"];
+
+// Import sources this screen curates. Keep in sync with IMPORT_SOURCES in
+// app/api/imports/route.ts. "all" spans every source.
+const SOURCES: { value: string; label: string }[] = [
+  { value: "all", label: "all sources" },
+  { value: "apple-notes", label: "Apple Notes" },
+  { value: "chatgpt-profile", label: "ChatGPT profile" },
+];
 
 export default function ImportsReview() {
   const [rows, setRows] = useState<Row[]>([]);
@@ -12,31 +20,35 @@ export default function ImportsReview() {
   const [offset, setOffset] = useState(0);
   const [limit, setLimit] = useState(40);
   const [type, setType] = useState("");
+  const [source, setSource] = useState("all");
+  const [counts, setCounts] = useState<Record<string, number>>({});
   const [q, setQ] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
 
-  const load = useCallback(async (off: number, t: string, query: string) => {
+  const load = useCallback(async (off: number, t: string, query: string, src: string) => {
     setLoading(true);
     const params = new URLSearchParams({ offset: String(off) });
     if (t) params.set("type", t);
     if (query) params.set("q", query);
+    if (src) params.set("source", src);
     const res = await fetch(`/api/imports?${params}`);
     const data = await res.json();
     setRows(data.items ?? []);
     setTotal(data.total ?? 0);
     setLimit(data.limit ?? 40);
     setOffset(data.offset ?? 0);
+    setCounts(data.counts ?? {});
     setSelected(new Set());
     setLoading(false);
   }, []);
 
   useEffect(() => {
-    load(0, type, q);
+    load(0, type, q, source);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [type]);
+  }, [type, source]);
 
   const toggle = (id: string) => {
     setSelected((prev) => {
@@ -59,7 +71,7 @@ export default function ImportsReview() {
       const res = await fetch("/api/imports", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ids, action }),
+        body: JSON.stringify({ ids, action, source }),
       });
       const data = await res.json();
       setBusy(false);
@@ -69,14 +81,26 @@ export default function ImportsReview() {
       }
       setNotice(`${action === "activate" ? "Activated" : "Removed"} ${data.affected}.`);
       // reload the same page (items shifted out of the archived set)
-      load(offset >= total - data.affected ? Math.max(0, offset - limit) : offset, type, q);
+      load(offset >= total - data.affected ? Math.max(0, offset - limit) : offset, type, q, source);
     },
-    [selected, busy, offset, total, limit, type, q, load]
+    [selected, busy, offset, total, limit, type, q, source, load]
   );
 
   return (
     <div>
       <div className="mb-3 flex flex-wrap items-center gap-2">
+        <select
+          value={source}
+          onChange={(e) => setSource(e.target.value)}
+          className="rounded-md border border-black/15 bg-transparent px-2 py-1.5 text-sm dark:border-white/20"
+        >
+          {SOURCES.map((s) => (
+            <option key={s.value} value={s.value}>
+              {s.label}
+              {s.value !== "all" && counts[s.value] != null ? ` (${counts[s.value]})` : ""}
+            </option>
+          ))}
+        </select>
         <select
           value={type}
           onChange={(e) => setType(e.target.value)}
@@ -91,7 +115,7 @@ export default function ImportsReview() {
         <input
           value={q}
           onChange={(e) => setQ(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && load(0, type, q)}
+          onKeyDown={(e) => e.key === "Enter" && load(0, type, q, source)}
           placeholder="search… (Enter)"
           className="flex-1 rounded-md border border-black/15 bg-transparent px-2 py-1.5 text-sm outline-none focus:border-black/40 dark:border-white/20"
         />
@@ -162,7 +186,7 @@ export default function ImportsReview() {
       {total > limit && (
         <div className="mt-4 flex items-center justify-between text-sm">
           <button
-            onClick={() => load(Math.max(0, offset - limit), type, q)}
+            onClick={() => load(Math.max(0, offset - limit), type, q, source)}
             disabled={offset === 0 || loading}
             className="rounded-md border border-black/15 px-3 py-1 disabled:opacity-40 dark:border-white/20"
           >
@@ -172,7 +196,7 @@ export default function ImportsReview() {
             {offset + 1}–{Math.min(offset + limit, total)} of {total}
           </span>
           <button
-            onClick={() => load(offset + limit, type, q)}
+            onClick={() => load(offset + limit, type, q, source)}
             disabled={offset + limit >= total || loading}
             className="rounded-md border border-black/15 px-3 py-1 disabled:opacity-40 dark:border-white/20"
           >
