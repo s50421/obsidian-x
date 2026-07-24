@@ -610,6 +610,7 @@ async function promptBulkDone(admin: SupabaseClient, userId: string): Promise<vo
     .eq("status", "open")
     .is("valid_to", null)
     .eq("type", "task")
+    .neq("source", "apple-notes") // never sweep up imported historical archive
     .order("created_at", { ascending: false })
     .limit(50);
 
@@ -644,6 +645,7 @@ async function markAllTasksDone(admin: SupabaseClient, userId: string): Promise<
     .eq("status", "open")
     .is("valid_to", null)
     .eq("type", "task")
+    .neq("source", "apple-notes") // never sweep up imported historical archive
     .select("id");
   const rows = updated ?? [];
   for (const it of rows) {
