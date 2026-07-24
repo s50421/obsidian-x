@@ -3,6 +3,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { enqueue, queueSize, flushQueue } from "@/lib/offline-queue";
 
+function pickMimeType(): string | undefined {
+  if (typeof MediaRecorder === "undefined") return undefined;
+  const cands = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/aac"];
+  for (const c of cands) {
+    if (MediaRecorder.isTypeSupported?.(c)) return c;
+  }
+  return undefined;
+}
+
 function formatFromMime(m: string): string {
   if (m.includes("webm")) return "webm";
   if (m.includes("mp4")) return "mp4";
@@ -131,7 +140,8 @@ export default function Capture() {
     setNotice(null);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mr = new MediaRecorder(stream);
+      const mime = pickMimeType();
+      const mr = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
       chunksRef.current = [];
       mr.ondataavailable = (e) => {
         if (e.data.size) chunksRef.current.push(e.data);
@@ -139,6 +149,12 @@ export default function Capture() {
       mr.onstop = async () => {
         stream.getTracks().forEach((t) => t.stop());
         const blob = new Blob(chunksRef.current, { type: mr.mimeType });
+        // A broken/empty recording (common on iOS if the tab lost focus) yields a
+        // tiny blob; sending it just makes the model invent — so bail out.
+        if (blob.size < 1200) {
+          setNotice("Didn't catch any audio — try holding Speak a moment longer.");
+          return;
+        }
         setTranscribing(true);
         try {
           const audio = await blobToBase64(blob);

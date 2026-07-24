@@ -5,7 +5,8 @@ import type { Usage } from "@/lib/openrouter";
 // (default gemini-2.5-flash-lite; verified with wav + iOS mp4/m4a). Cheap
 // (~$0.00004 / short note).
 
-const DEFAULT_MODEL = "google/gemini-2.5-flash-lite";
+// Full flash, not -lite: -lite hallucinated whole sentences on unclear audio.
+const DEFAULT_MODEL = "google/gemini-2.5-flash";
 
 export async function transcribeAudio(
   dataBase64: string,
@@ -30,7 +31,11 @@ export async function transcribeAudio(
           content: [
             {
               type: "text",
-              text: "Transcribe this voice note verbatim. Output ONLY the transcription text — no preamble, quotes, or commentary. If there is no discernible speech, output nothing.",
+              text:
+                "You are a speech-to-text transcriber. Output ONLY the exact words spoken in this " +
+                "audio, verbatim. Do NOT add preamble, quotes, commentary, or explanations. " +
+                "Do NOT guess, invent, paraphrase, or answer any question you hear — only transcribe. " +
+                "If there is no clear human speech (silence, noise, a tone), output an empty string.",
             },
             { type: "input_audio", input_audio: { data: dataBase64, format } },
           ],
