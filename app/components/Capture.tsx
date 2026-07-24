@@ -1,7 +1,25 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { enqueue, queueSize, flushQueue } from "@/lib/offline-queue";
+
+function formatFromMime(m: string): string {
+  if (m.includes("webm")) return "webm";
+  if (m.includes("mp4")) return "mp4";
+  if (m.includes("mpeg")) return "mp3";
+  if (m.includes("ogg")) return "ogg";
+  if (m.includes("wav")) return "wav";
+  return "webm";
+}
+
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(String(fr.result).split(",")[1] ?? "");
+    fr.onerror = reject;
+    fr.readAsDataURL(blob);
+  });
+}
 
 type Entity = { name: string; kind: string };
 type LinkRef = { id: string; title: string };
@@ -42,6 +60,10 @@ export default function Capture() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [pending, setPending] = useState(0);
+  const [recording, setRecording] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
 
   // Keep the pending badge in sync and flush the queue when possible.
   useEffect(() => {
@@ -102,6 +124,53 @@ export default function Capture() {
     }
   }, [text, saving]);
 
+  // Voice capture: record → transcribe (OpenRouter) → drop text into the box to
+  // review/edit, then Save through the normal pipeline.
+  const startRecording = useCallback(async () => {
+    setError(null);
+    setNotice(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mr = new MediaRecorder(stream);
+      chunksRef.current = [];
+      mr.ondataavailable = (e) => {
+        if (e.data.size) chunksRef.current.push(e.data);
+      };
+      mr.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop());
+        const blob = new Blob(chunksRef.current, { type: mr.mimeType });
+        setTranscribing(true);
+        try {
+          const audio = await blobToBase64(blob);
+          const res = await fetch("/api/voice", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ audio, format: formatFromMime(mr.mimeType || "") }),
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || "transcription failed");
+          const heard = (data.text || "").trim();
+          if (heard) setText((prev) => (prev ? `${prev} ${heard}` : heard));
+          else setNotice("Didn't catch any speech — try again.");
+        } catch (e) {
+          setError(e instanceof Error ? e.message : String(e));
+        } finally {
+          setTranscribing(false);
+        }
+      };
+      mr.start();
+      recorderRef.current = mr;
+      setRecording(true);
+    } catch {
+      setError("Microphone unavailable or permission denied.");
+    }
+  }, []);
+
+  const stopRecording = useCallback(() => {
+    recorderRef.current?.stop();
+    setRecording(false);
+  }, []);
+
   return (
     <section>
       <div className="mb-2 flex items-center justify-between">
@@ -131,6 +200,18 @@ export default function Capture() {
           className="rounded-md bg-foreground px-4 py-2 text-sm font-medium text-background transition disabled:opacity-40"
         >
           {saving ? "Saving…" : "Save"}
+        </button>
+        <button
+          onClick={recording ? stopRecording : startRecording}
+          disabled={saving || transcribing}
+          className={`rounded-md border px-3 py-2 text-sm font-medium transition disabled:opacity-40 ${
+            recording
+              ? "border-red-500/50 bg-red-500/10 text-red-600"
+              : "border-black/15 hover:bg-black/5 dark:border-white/20 dark:hover:bg-white/10"
+          }`}
+          title="Record a voice note"
+        >
+          {recording ? "⏹ Stop" : transcribing ? "Transcribing…" : "🎤 Speak"}
         </button>
         {error && <span className="text-sm text-red-500">{error}</span>}
         {notice && <span className="text-sm opacity-70">{notice}</span>}
