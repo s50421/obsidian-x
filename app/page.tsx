@@ -25,7 +25,13 @@ export default async function Home() {
           <h1 className="text-xl font-semibold tracking-tight">Obsidian-X</h1>
           <p className="text-xs opacity-60">{user.email}</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <Link
+            href="/interview"
+            className="rounded-md border border-black/15 px-3 py-1.5 text-xs opacity-70 transition hover:opacity-100 dark:border-white/20"
+          >
+            Interview
+          </Link>
           <Link
             href="/imports"
             className="rounded-md border border-black/15 px-3 py-1.5 text-xs opacity-70 transition hover:opacity-100 dark:border-white/20"
