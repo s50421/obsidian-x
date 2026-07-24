@@ -9,6 +9,7 @@ type MatchRow = {
   title: string;
   type: string;
   body: string;
+  status: string;
   vault_path: string | null;
   sensitive: boolean;
 };
@@ -61,7 +62,9 @@ export async function answerQuestion(
   const context = rows
     .map((m, i) => {
       const body = m.sensitive ? "(sensitive note — body withheld)" : m.body;
-      return `[${i + 1}] "${m.title}" (${m.type})\n${body}`;
+      // Surface status so the model treats completed items as done, not to-do.
+      const status = m.status && m.status !== "open" ? `, ${m.status}` : "";
+      return `[${i + 1}] "${m.title}" (${m.type}${status})\n${body}`;
     })
     .join("\n\n");
 
@@ -72,6 +75,8 @@ export async function answerQuestion(
         role: "system",
         content:
           "You are the user's second brain. Answer the question using ONLY the notes provided. " +
+          "Each note shows its status in parentheses; a note marked 'done' is already " +
+          "completed — never list it as something still to do or outstanding. " +
           "Cite the notes you use inline with their bracketed numbers like [1], [2]. " +
           "If the notes don't contain the answer, say so plainly. Be concise.",
       },

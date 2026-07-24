@@ -6,9 +6,13 @@ import { logAudit } from "@/lib/audit";
 import { logLlmUsage } from "@/lib/usage";
 import { detectSensitive } from "@/lib/sensitivity";
 
-// Similarity thresholds (cosine, 0..1) for normalized gte-small vectors.
-const LINK_THRESHOLD = 0.4; // loosely related -> auto-link
-const DUP_THRESHOLD = 0.85; // near-identical -> flag as a merge candidate
+// Similarity thresholds (cosine, 0..1). gte-small has a HIGH floor — even
+// distinct items score ~0.76–0.89 (measured: "Meeting with Dani" ~ "Meeting with
+// V-Bank" = 0.865), so low thresholds match everything. These are tuned above
+// that floor: auto-link only genuinely-related items, and flag a duplicate only
+// when it's near-identical (a true re-capture is ~0.95+).
+const LINK_THRESHOLD = 0.8; // clearly related -> auto-link
+const DUP_THRESHOLD = 0.93; // near-identical -> flag as a merge candidate
 const LOW_CONFIDENCE = 0.55;
 
 type Neighbor = {

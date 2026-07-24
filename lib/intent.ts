@@ -4,18 +4,31 @@ import { chat, extractJson, type Usage } from "@/lib/openrouter";
 // This layer reads each message and decides what they *mean*, so the webhook can
 // act (and only ask for a Yes/No on big/risky things like completing everything).
 
-export type IntentKind = "save" | "complete" | "complete_all" | "ask" | "unknown";
+export type IntentKind =
+  | "save"
+  | "complete"
+  | "complete_all"
+  | "reopen"
+  | "ask"
+  | "unknown";
 
 export type Intent = {
   intent: IntentKind;
   summary: string; // short, human-readable read-back addressed to the owner
-  target: string; // for "complete": the task the owner is referring to, their words
+  target: string; // for "complete"/"reopen": the item the owner refers to, their words
   query: string; // for "ask": the question to answer
   confidence: number;
   usage: Usage;
 };
 
-const KINDS: IntentKind[] = ["save", "complete", "complete_all", "ask", "unknown"];
+const KINDS: IntentKind[] = [
+  "save",
+  "complete",
+  "complete_all",
+  "reopen",
+  "ask",
+  "unknown",
+];
 
 export async function interpretIntent(text: string, todayISO: string): Promise<Intent> {
   const model = process.env.OPENROUTER_CLASSIFY_MODEL!;
@@ -25,11 +38,11 @@ export async function interpretIntent(text: string, todayISO: string): Promise<I
     `what they want. Today is ${todayISO}.\n` +
     `Return ONLY a JSON object:\n` +
     `{\n` +
-    `  "intent": one of ["save","complete","complete_all","ask","unknown"],\n` +
+    `  "intent": one of ["save","complete","complete_all","reopen","ask","unknown"],\n` +
     `  "summary": one short sentence, addressed to the owner, describing what you'll do\n` +
     `             (e.g. "Save a task to pick up milk tomorrow", "Mark your dentist task done",\n` +
-    `              "Answer what you owe on invoices"),\n` +
-    `  "target": for "complete" ONLY, the task they mean in their own words, else "",\n` +
+    `              "Reopen your rent task", "Answer what you owe on invoices"),\n` +
+    `  "target": for "complete"/"reopen" ONLY, the item they mean in their own words, else "",\n` +
     `  "query": for "ask" ONLY, the question to answer, else "",\n` +
     `  "confidence": number 0..1\n` +
     `}\n` +
@@ -40,6 +53,8 @@ export async function interpretIntent(text: string, todayISO: string): Promise<I
     `("finished the report", "dentist is booked", "I paid the rent").\n` +
     `- "complete_all": they say EVERYTHING / all their tasks are done ` +
     `("all done", "done all", "finished everything", "cleared my list").\n` +
+    `- "reopen": they want a previously-completed item put back to open / undone ` +
+    `("reopen the rent task", "actually I didn't finish the report", "mark the dentist task not done").\n` +
     `- "ask": a genuine question or request to look something up in their notes ` +
     `("what did I say about X", "when's my meeting", "do I owe anything").\n` +
     `- "unknown": genuinely unclear.\n` +

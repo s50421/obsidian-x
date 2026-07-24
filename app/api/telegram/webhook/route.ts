@@ -16,8 +16,9 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 // Two-way Telegram bot (v1.5 T1). The owner texts naturally — no commands. Every
-// message is run through an intent layer (lib/intent.ts); low-risk intents act
-// immediately with an Undo, and only big/risky ones (complete-all) ask Yes/No.
+// message runs through an intent layer (lib/intent.ts). Saving a note/task and
+// completing everything both ask a Yes/No first; single complete/reopen act with
+// an Undo; questions are answered directly.
 // Security: (1) the webhook's secret_token, echoed in the
 // X-Telegram-Bot-Api-Secret-Token header; (2) owner-lock to TELEGRAM_CHAT_ID.
 // Public route (excluded from proxy.ts), self-authenticating like inbound-email.
@@ -43,10 +44,10 @@ type TgUpdate = { message?: TgMessage; callback_query?: TgCallback };
 
 const HELP = [
   "🧠 Just text me naturally — no commands:",
-  "• Save — “pick up milk tomorrow”, “idea: …”, “remember that …”",
+  "• Save — “pick up milk tomorrow”, “idea: …” (I confirm before saving)",
   "• Done — “finished the report”, “dentist is booked”, “all done”",
+  "• Reopen — “reopen the rent task”, “I didn't finish X”",
   "• Ask — “what do I owe?”, “when's my meeting?”",
-  "I'll act and show an Undo, and check with you before big things.",
 ].join("\n");
 
 export async function POST(req: Request) {
@@ -116,13 +117,16 @@ async function handleMessage(
     case "complete":
       await handleComplete(admin, userId, intent.target || text);
       break;
+    case "reopen":
+      await handleReopen(admin, userId, intent.target || text);
+      break;
     case "ask":
       await runAsk(userId, intent.query || text);
       break;
     case "save":
     case "unknown":
     default:
-      await runCapture(admin, userId, text);
+      await promptSave(admin, userId, text, intent.summary); // confirm before saving
       break;
   }
 }
@@ -136,6 +140,14 @@ async function handleCallback(
 ): Promise<void> {
   const [action, id] = (cb.data ?? "").split(":");
 
+  if (action === "save" && id) {
+    await approveCaptureProposal(admin, userId, id, cb);
+    return;
+  }
+  if (action === "drop" && id) {
+    await rejectCaptureProposal(admin, userId, id, cb);
+    return;
+  }
   if (action === "done" && id) {
     const title = await markDoneById(admin, userId, id);
     await answerCallbackQuery(cb.id, title ? `✓ Done: ${title}` : "Already done or not found");
@@ -182,30 +194,135 @@ async function handleCallback(
 
 // ---- actions ----------------------------------------------------------------
 
-async function runCapture(admin: SupabaseClient, userId: string, text: string): Promise<void> {
-  const outcome = await captureText(userId, text, "telegram");
-  const lines = outcome.created.map((c) => {
-    const due = c.due_at ? ` (due ${c.due_at.slice(0, 10)})` : "";
-    const rev = c.needs_review ? " · needs review" : "";
-    return `🧠 Saved ${c.item.type}: ${c.item.title}${due}${rev}`;
-  });
-  // One Undo per saved item (reversible: deletes the item + its vault note).
-  const buttons = outcome.created.map((c) => [
-    { text: `↩ Undo: ${c.item.title.slice(0, 32)}`, callback_data: `undo:${c.item.id}` },
-  ]);
-  await sendMessage(lines.join("\n") || "🧠 Saved.", {
+// Confirm before saving (owner asked to approve added notes/tasks). The pending
+// text is parked as a proposal so the Yes/No callback can act on it later.
+async function promptSave(
+  admin: SupabaseClient,
+  userId: string,
+  text: string,
+  summary: string
+): Promise<void> {
+  const preview = text.length > 140 ? `${text.slice(0, 140)}…` : text;
+  const { data: p, error } = await admin
+    .from("proposals")
+    .insert({
+      user_id: userId,
+      kind: "capture",
+      status: "pending",
+      title: (summary || preview).slice(0, 120),
+      payload: { text },
+      source: "telegram",
+    })
+    .select("id")
+    .single();
+
+  if (error || !p) {
+    // Proposal store unavailable — fall back to saving directly.
+    const { summary: s } = await captureAndSummarize(userId, text);
+    await sendMessage(s, { parse_mode: "plain" });
+    return;
+  }
+
+  await sendMessage(`${summary ? `📝 ${summary}?` : "📝 Save this?"}\n\n“${preview}”`, {
     parse_mode: "plain",
-    reply_markup: buttons.length ? { inline_keyboard: buttons } : undefined,
+    reply_markup: {
+      inline_keyboard: [
+        [
+          { text: "✅ Save", callback_data: `save:${p.id}` },
+          { text: "✖ Discard", callback_data: `drop:${p.id}` },
+        ],
+      ],
+    },
   });
+}
+
+async function approveCaptureProposal(
+  admin: SupabaseClient,
+  userId: string,
+  proposalId: string,
+  cb: TgCallback
+): Promise<void> {
+  const { data: p } = await admin
+    .from("proposals")
+    .select("id, status, payload")
+    .eq("id", proposalId)
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (!p || p.status !== "pending") {
+    await answerCallbackQuery(cb.id, "Already handled");
+    return;
+  }
+  const text = ((p.payload as { text?: string } | null)?.text ?? "").toString();
+  const { outcome, summary } = await captureAndSummarize(userId, text);
+  await admin
+    .from("proposals")
+    .update({
+      status: "approved",
+      decided_at: new Date().toISOString(),
+      result: { item_ids: outcome.created.map((c) => c.item.id) },
+    })
+    .eq("id", proposalId);
+  await answerCallbackQuery(cb.id, "Saved");
+  if (cb.message) {
+    await editMessageText(cb.message.chat.id, cb.message.message_id, summary);
+  }
+}
+
+async function rejectCaptureProposal(
+  admin: SupabaseClient,
+  userId: string,
+  proposalId: string,
+  cb: TgCallback
+): Promise<void> {
+  await admin
+    .from("proposals")
+    .update({ status: "rejected", decided_at: new Date().toISOString() })
+    .eq("id", proposalId)
+    .eq("user_id", userId)
+    .eq("status", "pending");
+  await answerCallbackQuery(cb.id, "Discarded");
+  if (cb.message) {
+    await editMessageText(cb.message.chat.id, cb.message.message_id, "🗑 Discarded — not saved.");
+  }
+}
+
+// Run the capture pipeline and format a clean confirmation line per created item.
+async function captureAndSummarize(
+  userId: string,
+  text: string
+): Promise<{ outcome: Awaited<ReturnType<typeof captureText>>; summary: string }> {
+  const outcome = await captureText(userId, text, "telegram");
+  const summary =
+    outcome.created
+      .map((c) => {
+        const due = c.due_at ? ` (due ${c.due_at.slice(0, 10)})` : "";
+        const rev = c.needs_review ? " · needs review" : "";
+        return `🧠 Saved ${c.item.type}: ${c.item.title}${due}${rev}`;
+      })
+      .join("\n") || "🧠 Saved.";
+  return { outcome, summary };
 }
 
 async function runAsk(userId: string, question: string): Promise<void> {
   const { answer, sources } = await answerQuestion(userId, question);
-  let reply = answer;
+  let reply = stripMarkdown(answer);
   if (sources.length) {
     reply += `\n\n📎 Sources:\n${sources.slice(0, 5).map((s) => `[${s.n}] ${s.title}`).join("\n")}`;
   }
   await sendMessage(reply, { parse_mode: "plain" });
+}
+
+// Telegram messages are sent as plain text (dynamic/LLM content can't be trusted
+// to be valid Markdown), so strip the markdown the model emits for a clean look.
+function stripMarkdown(s: string): string {
+  return s
+    .replace(/\*\*(.+?)\*\*/g, "$1") // **bold**
+    .replace(/__(.+?)__/g, "$1") // __bold__
+    .replace(/`([^`]+)`/g, "$1") // `code`
+    .replace(/^#{1,6}\s+/gm, "") // # headers
+    .replace(/^[ \t]*[-*+]\s+/gm, "• ") // bullets -> •
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 // gte-small has a high similarity floor (even unrelated short text pairs score
@@ -219,14 +336,14 @@ const COMPLETE_MARGIN = 0.07;
 // open items semantically. Clear winner -> do it (with Undo); a close cluster ->
 // let them pick; nothing convincing -> offer recent open items to tap.
 async function handleComplete(admin: SupabaseClient, userId: string, target: string): Promise<void> {
-  const matches = await resolveOpenMatches(admin, userId, target); // open only, sorted desc
+  const matches = await resolveMatches(admin, userId, target, "open");
   const top = matches[0]?.similarity ?? 0;
 
   if (matches.length && top >= COMPLETE_STRONG) {
     const cluster = matches.filter((m) => m.similarity >= top - COMPLETE_MARGIN);
     if (cluster.length === 1) {
       const title = await markDoneById(admin, userId, cluster[0].id);
-      await sendMessage(title ? `✓ Marked done: ${title}` : "Couldn't mark that done.", {
+      await sendMessage(title ? `✓ Done: ${title}` : "Couldn't mark that done.", {
         parse_mode: "plain",
         reply_markup: title
           ? { inline_keyboard: [[{ text: "↩ Undo", callback_data: `reopen:${cluster[0].id}` }]] }
@@ -269,17 +386,67 @@ async function handleComplete(admin: SupabaseClient, userId: string, target: str
   });
 }
 
+// Put a completed item back to open. Same standout-match logic as complete.
+async function handleReopen(admin: SupabaseClient, userId: string, target: string): Promise<void> {
+  const matches = await resolveMatches(admin, userId, target, "done");
+  const top = matches[0]?.similarity ?? 0;
+
+  if (matches.length && top >= COMPLETE_STRONG) {
+    const cluster = matches.filter((m) => m.similarity >= top - COMPLETE_MARGIN);
+    if (cluster.length === 1) {
+      const title = await reopenById(admin, userId, cluster[0].id);
+      await sendMessage(title ? `↩ Reopened: ${title}` : "Couldn't reopen that.", {
+        parse_mode: "plain",
+      });
+      return;
+    }
+    await sendMessage("Which one should I reopen?", {
+      parse_mode: "plain",
+      reply_markup: {
+        inline_keyboard: cluster.slice(0, 5).map((m) => [
+          { text: `↩ ${m.title.slice(0, 40)}`, callback_data: `reopen:${m.id}` },
+        ]),
+      },
+    });
+    return;
+  }
+
+  const { data: recent } = await admin
+    .from("items")
+    .select("id, title")
+    .eq("user_id", userId)
+    .eq("status", "done")
+    .is("valid_to", null)
+    .order("created_at", { ascending: false })
+    .limit(6);
+  const done = recent ?? [];
+  if (done.length === 0) {
+    await sendMessage("You have no completed items to reopen.", { parse_mode: "plain" });
+    return;
+  }
+  await sendMessage(`I wasn't sure which you meant by “${target}”. Tap the one to reopen:`, {
+    parse_mode: "plain",
+    reply_markup: {
+      inline_keyboard: done.map((m) => [
+        { text: `↩ ${m.title.slice(0, 40)}`, callback_data: `reopen:${m.id}` },
+      ]),
+    },
+  });
+}
+
 // ---- data helpers -----------------------------------------------------------
 
-type OpenMatch = { id: string; title: string; similarity: number };
+type Match = { id: string; title: string; similarity: number };
 
-// Semantic search for the owner's OPEN items matching a natural-language target,
-// returned sorted by similarity (desc). Thresholding is the caller's job.
-async function resolveOpenMatches(
+// Semantic search for the owner's items in a given status ('open' | 'done')
+// matching a natural-language target, sorted by similarity (desc). Thresholding
+// is the caller's job.
+async function resolveMatches(
   admin: SupabaseClient,
   userId: string,
-  target: string
-): Promise<OpenMatch[]> {
+  target: string,
+  status: "open" | "done"
+): Promise<Match[]> {
   const q = target.trim();
   if (!q) return [];
   const embedding = await embed(q);
@@ -292,17 +459,17 @@ async function resolveOpenMatches(
   const cands = (neigh ?? []) as { id: string; similarity: number }[];
   if (cands.length === 0) return [];
   const ids = cands.map((n) => n.id);
-  const { data: openRows } = await admin
+  const { data: rows } = await admin
     .from("items")
     .select("id, title")
     .eq("user_id", userId)
-    .eq("status", "open")
+    .eq("status", status)
     .is("valid_to", null)
     .in("id", ids);
-  const open = new Map((openRows ?? []).map((r) => [r.id, r.title as string]));
+  const byId = new Map((rows ?? []).map((r) => [r.id, r.title as string]));
   return cands
-    .filter((n) => open.has(n.id))
-    .map((n) => ({ id: n.id, title: open.get(n.id)!, similarity: n.similarity }))
+    .filter((n) => byId.has(n.id))
+    .map((n) => ({ id: n.id, title: byId.get(n.id)!, similarity: n.similarity }))
     .sort((a, b) => b.similarity - a.similarity);
 }
 
