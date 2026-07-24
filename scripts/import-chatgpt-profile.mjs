@@ -58,11 +58,23 @@ function slugify(s) {
     .slice(0, 40) || "general";
 }
 
+// A "N. Title" / "N) Title" line is a section header (not a fact) when the title
+// is short and doesn't read like a sentence. Facts in these profiles are prose,
+// so this only fires on real headings like "1. Identity & background".
+function numberedSection(text) {
+  const m = text.match(/^\d+[.)]\s+(.+)$/);
+  if (!m) return null;
+  const title = m[1].replace(/[*_`]/g, "").trim();
+  const words = title.split(/\s+/).length;
+  return words <= 6 && !/[.!?]$/.test(title) ? title : null;
+}
+
 // Split the profile into { section, text } facts.
 function parseProfile(raw) {
   const lines = raw.replace(/\r\n?/g, "\n").split("\n");
   const facts = [];
   let section = "General";
+  let seenSection = false;
   for (let line of lines) {
     const t = line.trim();
     if (!t) continue;
@@ -70,9 +82,16 @@ function parseProfile(raw) {
     if (/^([-*_=]\s?){3,}$/.test(t)) continue;
     // markdown header -> new section (also handles "**Bold heading**" only-lines)
     const h = t.match(/^#{1,6}\s+(.*)$/);
-    if (h) { section = h[1].replace(/[*_`#:]+$/g, "").replace(/[*_`]/g, "").trim() || section; continue; }
+    if (h) { section = h[1].replace(/[*_`#:]+$/g, "").replace(/[*_`]/g, "").trim() || section; seenSection = true; continue; }
     const boldOnly = t.match(/^\*\*(.+?)\*\*:?$/);
-    if (boldOnly) { section = boldOnly[1].trim(); continue; }
+    if (boldOnly) { section = boldOnly[1].trim(); seenSection = true; continue; }
+    // "1. Identity & background" style section header
+    const ns = numberedSection(t);
+    if (ns) { section = ns; seenSection = true; continue; }
+    const isBullet = /^([-*•]|\d+[.)])\s+/.test(t);
+    // Skip preamble prose before the first section (document title / intro line),
+    // unless it's an explicit bullet.
+    if (!seenSection && !isBullet) continue;
     // strip a leading bullet / number marker
     let fact = t.replace(/^([-*•]|\d+[.)])\s+/, "").trim();
     // strip surrounding markdown emphasis but keep inline text
