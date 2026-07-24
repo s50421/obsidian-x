@@ -7,6 +7,7 @@ import { answerQuestion } from "@/lib/ask-core";
 import { interpretIntent } from "@/lib/intent";
 import { embed } from "@/lib/embed";
 import { deleteVaultNote } from "@/lib/vault";
+import { applyProposal, rejectProposalById } from "@/lib/proposals";
 import { logAudit } from "@/lib/audit";
 import { logLlmUsage } from "@/lib/usage";
 import { sendMessage, answerCallbackQuery, editMessageText } from "@/lib/telegram";
@@ -148,6 +149,14 @@ async function handleCallback(
     await rejectCaptureProposal(admin, userId, id, cb);
     return;
   }
+  if (action === "approve" && id) {
+    await approveProposal(admin, userId, id, cb);
+    return;
+  }
+  if (action === "reject" && id) {
+    await rejectProposal(admin, userId, id, cb);
+    return;
+  }
   if (action === "done" && id) {
     const title = await markDoneById(admin, userId, id);
     await answerCallbackQuery(cb.id, title ? `✓ Done: ${title}` : "Already done or not found");
@@ -283,6 +292,45 @@ async function rejectCaptureProposal(
   await answerCallbackQuery(cb.id, "Discarded");
   if (cb.message) {
     await editMessageText(cb.message.chat.id, cb.message.message_id, "🗑 Discarded — not saved.");
+  }
+}
+
+// ---- proposals: approve/reject an outward action (T3/T4) --------------------
+
+// Approve → run the action (create the ClickUp task) via the shared lib, then
+// reflect the outcome in Telegram.
+async function approveProposal(
+  admin: SupabaseClient,
+  userId: string,
+  proposalId: string,
+  cb: TgCallback
+): Promise<void> {
+  const r = await applyProposal(admin, userId, proposalId);
+  await answerCallbackQuery(
+    cb.id,
+    r.alreadyHandled ? "Already handled" : r.ok ? "Created in ClickUp ✓" : "ClickUp failed"
+  );
+  if (r.ok && cb.message) {
+    await editMessageText(
+      cb.message.chat.id,
+      cb.message.message_id,
+      `✅ ${r.message}\n${r.url ?? ""}`.trim()
+    );
+  } else if (!r.ok && !r.alreadyHandled) {
+    await sendMessage(`⚠️ Couldn't create the ClickUp task: ${r.message}`, { parse_mode: "plain" });
+  }
+}
+
+async function rejectProposal(
+  admin: SupabaseClient,
+  userId: string,
+  proposalId: string,
+  cb: TgCallback
+): Promise<void> {
+  await rejectProposalById(admin, userId, proposalId);
+  await answerCallbackQuery(cb.id, "Rejected");
+  if (cb.message) {
+    await editMessageText(cb.message.chat.id, cb.message.message_id, "✖ Rejected — not added to ClickUp.");
   }
 }
 

@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { ownerEmail } from "@/lib/owner";
 import { captureText } from "@/lib/capture-core";
+import { clickupConfigured } from "@/lib/clickup";
+import { proposeClickUpTaskForItem, notifyClickUpProposal } from "@/lib/proposals";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -78,7 +80,22 @@ export async function POST(req: Request) {
 
   try {
     const outcome = await captureText(owner.id, composed, "email");
-    return NextResponse.json({ ok: true, created: outcome.created.length });
+
+    // T4: an actionable email (a task) becomes a proposed ClickUp task the owner
+    // approves in Telegram — alongside the note, which stays in the brain.
+    let proposed = 0;
+    if (clickupConfigured()) {
+      for (const c of outcome.created) {
+        if (c.item.type !== "task") continue;
+        const p = await proposeClickUpTaskForItem(admin, owner.id, c.item.id, "email");
+        if (p) {
+          await notifyClickUpProposal(p);
+          proposed++;
+        }
+      }
+    }
+
+    return NextResponse.json({ ok: true, created: outcome.created.length, proposed });
   } catch (e) {
     return NextResponse.json(
       { error: e instanceof Error ? e.message : String(e) },
