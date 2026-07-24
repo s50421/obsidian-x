@@ -57,7 +57,7 @@ export async function GET(req: Request) {
     ? events
         .map(
           (e) =>
-            `• ${timeFmt(e.start)} — ${e.summary}${e.location ? ` @ ${e.location}` : ""}  _(${e.calendar})_`
+            `• ${e.allDay ? "All day" : timeFmt(e.start)} — ${e.summary}${e.location ? ` @ ${e.location}` : ""}  _(${e.calendar})_`
         )
         .join("\n")
     : "_nothing scheduled_";

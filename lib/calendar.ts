@@ -6,6 +6,7 @@ export type CalEvent = {
   start: Date;
   end: Date | null;
   location: string | null;
+  allDay: boolean;
 };
 
 // Every configured calendar = any env var whose name contains CALENDAR_ICAL_URL
@@ -55,6 +56,10 @@ export async function fetchUpcomingEvents(windowHours = 24): Promise<CalEvent[]>
       const parsed = ical.sync.parseICS(await res.text());
       const events: CalEvent[] = [];
 
+      const nowMs = now.getTime();
+      const endMs = end.getTime();
+      const DAY = 24 * 3600 * 1000;
+
       for (const key of Object.keys(parsed)) {
         const comp = parsed[key];
         if (!comp || comp.type !== "VEVENT") continue;
@@ -63,13 +68,35 @@ export async function fetchUpcomingEvents(windowHours = 24): Promise<CalEvent[]>
 
         const summary = ev.summary ? String(ev.summary) : "(no title)";
         const location = ev.location ? String(ev.location) : null;
+        // All-day events have DATE (not DATE-TIME) values; node-ical sets datetype.
+        const allDay = (ev as unknown as { datetype?: string }).datetype === "date";
         const startMs = new Date(ev.start).getTime();
-        const durMs = ev.end ? new Date(ev.end).getTime() - startMs : 0;
+        // Duration: explicit end, else a full day for all-day, else a point.
+        const durMs = ev.end ? new Date(ev.end).getTime() - startMs : allDay ? DAY : 0;
+
+        // Include an occurrence if it OVERLAPS the window [now, end] — this keeps
+        // all-day events (which start at midnight, before "now") and in-progress
+        // events, not just those whose start is still in the future.
+        const consider = (st: Date) => {
+          const s = st.getTime();
+          const e = s + durMs;
+          const overlaps = durMs > 0 ? s < endMs && e > nowMs : s >= nowMs && s <= endMs;
+          if (!overlaps) return;
+          events.push({
+            calendar: c.name,
+            summary,
+            start: st,
+            end: durMs ? new Date(s + durMs) : null,
+            location,
+            allDay,
+          });
+        };
 
         if (ev.rrule) {
           let occ: Date[] = [];
           try {
-            occ = ev.rrule.between(now, end, true);
+            // Look back a day so an all-day / in-progress occurrence isn't missed.
+            occ = ev.rrule.between(new Date(nowMs - DAY), end, true);
           } catch {
             occ = [];
           }
@@ -77,27 +104,11 @@ export async function fetchUpcomingEvents(windowHours = 24): Promise<CalEvent[]>
             ? Object.values(ev.exdate).map((d) => new Date(d as unknown as Date).getTime())
             : [];
           for (const o of occ) {
-            const st = new Date(o);
-            if (exdates.includes(st.getTime())) continue;
-            events.push({
-              calendar: c.name,
-              summary,
-              start: st,
-              end: durMs ? new Date(st.getTime() + durMs) : null,
-              location,
-            });
+            if (exdates.includes(new Date(o).getTime())) continue;
+            consider(new Date(o));
           }
         } else {
-          const st = new Date(ev.start);
-          if (st >= now && st <= end) {
-            events.push({
-              calendar: c.name,
-              summary,
-              start: st,
-              end: ev.end ? new Date(ev.end) : null,
-              location,
-            });
-          }
+          consider(new Date(ev.start));
         }
       }
       return events;
