@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { sendMessage } from "@/lib/telegram";
 import { createClickUpTask } from "@/lib/clickup";
+import { reprojectItemToVault } from "@/lib/vault-sync";
 import { logAudit } from "@/lib/audit";
 
 // v1.5 T2/T4: turn an actionable item (e.g. a task captured from an email) into a
@@ -33,11 +34,14 @@ export async function proposeClickUpTaskForItem(
 ): Promise<ProposalRow | null> {
   const { data: item } = await admin
     .from("items")
-    .select("id, title, body, due_at, priority, type")
+    .select("id, title, body, due_at, priority, type, external")
     .eq("id", itemId)
     .eq("user_id", userId)
     .maybeSingle();
   if (!item) return null;
+  // Reconcile: don't propose a second ClickUp task for an item already linked.
+  const external = item.external as { clickup?: { id?: string } } | null;
+  if (external?.clickup?.id) return null;
 
   const payload: ClickUpPayload = {
     name: item.title,
@@ -118,6 +122,7 @@ export async function applyProposal(
         .update({ external: { clickup: { id: task.id, url: task.url } } })
         .eq("id", p.source_item_id)
         .eq("user_id", userId);
+      await reprojectItemToVault(admin, p.source_item_id); // project the ClickUp link into the vault
     }
     await logAudit(admin, {
       user_id: userId,

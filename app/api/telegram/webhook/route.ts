@@ -7,6 +7,7 @@ import { answerQuestion } from "@/lib/ask-core";
 import { interpretIntent } from "@/lib/intent";
 import { embed } from "@/lib/embed";
 import { deleteVaultNote } from "@/lib/vault";
+import { reprojectItemToVault } from "@/lib/vault-sync";
 import { applyProposal, rejectProposalById } from "@/lib/proposals";
 import { logAudit } from "@/lib/audit";
 import { logLlmUsage } from "@/lib/usage";
@@ -544,6 +545,7 @@ async function markDoneById(
     actor: "user",
     detail: { via: "telegram" },
   });
+  await reprojectItemToVault(admin, item.id); // keep the vault in sync
   return item.title;
 }
 
@@ -569,6 +571,7 @@ async function reopenById(
     actor: "user",
     detail: { via: "telegram" },
   });
+  await reprojectItemToVault(admin, item.id); // keep the vault in sync
   return item.title;
 }
 
@@ -651,6 +654,7 @@ async function markAllTasksDone(admin: SupabaseClient, userId: string): Promise<
       actor: "user",
       detail: { via: "telegram", bulk: true },
     });
+    await reprojectItemToVault(admin, it.id); // keep the vault in sync
   }
   return rows.length;
 }

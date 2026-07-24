@@ -12,6 +12,8 @@ export type VaultNote = {
   dueAt?: string | null; // ISO
   entities?: { name: string; kind: string }[];
   links?: { id: string; title: string }[];
+  status?: string; // open | done | archived — projected from the DB (source of truth)
+  clickupUrl?: string | null; // set once an approved proposal creates the ClickUp task
 };
 
 function repoParts() {
@@ -35,10 +37,12 @@ function renderMarkdown(note: VaultNote): string {
     `tags:${yamlList(note.tags)}`,
     `priority: ${note.priority}`,
   ];
+  if (note.status) fm.push(`status: ${note.status}`);
   if (note.dueAt) fm.push(`due: ${note.dueAt}`);
   if (note.entities && note.entities.length) {
     fm.push(`entities:${yamlList(note.entities.map((e) => `${e.name} (${e.kind})`))}`);
   }
+  if (note.clickupUrl) fm.push(`clickup: ${note.clickupUrl}`);
   fm.push(`source: ${note.source}`, `created_at: ${note.createdAt}`, "---");
 
   const parts = [fm.join("\n"), "", `# ${note.title}`, "", note.body.trim(), ""];

@@ -150,6 +150,7 @@ export async function captureText(
         dueAt,
         entities: it.entities,
         links: links.map((l) => ({ id: l.id, title: l.title })),
+        status: "open",
       });
       vault_url = vaultUrl(vault_path);
       await admin.from("items").update({ vault_path }).eq("id", item.id);
