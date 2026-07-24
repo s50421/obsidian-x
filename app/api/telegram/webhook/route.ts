@@ -309,7 +309,7 @@ async function approveProposal(
   const r = await applyProposal(admin, userId, proposalId);
   await answerCallbackQuery(
     cb.id,
-    r.alreadyHandled ? "Already handled" : r.ok ? "Created in ClickUp ✓" : "ClickUp failed"
+    r.alreadyHandled ? r.message : r.ok ? "Created in ClickUp ✓" : "ClickUp failed"
   );
   if (r.ok && cb.message) {
     await editMessageText(

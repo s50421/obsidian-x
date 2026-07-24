@@ -96,7 +96,7 @@ export async function applyProposal(
     .eq("id", proposalId)
     .eq("user_id", userId)
     .maybeSingle();
-  if (!p) return { ok: false, message: "Proposal not found" };
+  if (!p) return { ok: false, alreadyHandled: true, message: "This request is no longer available" };
   if (p.status !== "pending") return { ok: false, alreadyHandled: true, message: "Already handled" };
   if (p.kind !== "clickup_task") return { ok: false, message: "Unsupported proposal kind" };
 
