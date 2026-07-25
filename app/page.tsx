@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
-import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
 import { isOwner } from "@/lib/owner";
+import AppNav from "./components/AppNav";
 import Capture from "./components/Capture";
 import Review from "./components/Review";
 import Ask from "./components/Ask";
@@ -19,59 +19,27 @@ export default async function Home() {
   }
 
   return (
-    <main className="mx-auto w-full max-w-2xl flex-1 px-4 py-6 sm:py-10">
-      <header className="mb-8 flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-semibold tracking-tight">Obsidian-X</h1>
-          <p className="text-xs opacity-60">{user.email}</p>
+    <>
+      <AppNav />
+      <main className="mx-auto w-full max-w-5xl flex-1 px-4 pb-28 pt-3 md:px-8 md:pb-12 md:pt-8">
+        <div className="mb-4 flex items-baseline justify-between md:hidden">
+          <h1 className="text-[28px] font-bold tracking-[-0.022em]">Obsidian-X</h1>
+          <span className="text-xs text-ink-3">{user.email}</span>
         </div>
-        <div className="flex flex-wrap items-center justify-end gap-2">
-          <Link
-            href="/graph"
-            className="rounded-md border border-black/15 px-3 py-1.5 text-xs opacity-70 transition hover:opacity-100 dark:border-white/20"
-          >
-            Graph
-          </Link>
-          <Link
-            href="/interview"
-            className="rounded-md border border-black/15 px-3 py-1.5 text-xs opacity-70 transition hover:opacity-100 dark:border-white/20"
-          >
-            Interview
-          </Link>
-          <Link
-            href="/imports"
-            className="rounded-md border border-black/15 px-3 py-1.5 text-xs opacity-70 transition hover:opacity-100 dark:border-white/20"
-          >
-            Imports
-          </Link>
-          <Link
-            href="/approvals"
-            className="rounded-md border border-black/15 px-3 py-1.5 text-xs opacity-70 transition hover:opacity-100 dark:border-white/20"
-          >
-            Approvals
-          </Link>
-          <Link
-            href="/ops"
-            className="rounded-md border border-black/15 px-3 py-1.5 text-xs opacity-70 transition hover:opacity-100 dark:border-white/20"
-          >
-            Ops
-          </Link>
-          <form action="/auth/signout" method="post">
-            <button
-              type="submit"
-              className="rounded-md border border-black/15 px-3 py-1.5 text-xs opacity-70 transition hover:opacity-100 dark:border-white/20"
-            >
-              Sign out
-            </button>
-          </form>
-        </div>
-      </header>
 
-      <div className="space-y-10">
-        <Capture />
-        <Review />
-        <Ask />
-      </div>
-    </main>
+        {/* Mobile: Capture · Review · Ask stacked. Desktop: Capture+Ask left, Review right. */}
+        <div className="grid grid-cols-1 gap-7 md:grid-cols-[1fr_360px] md:items-start">
+          <div className="md:col-start-1 md:row-start-1">
+            <Capture />
+          </div>
+          <div className="md:col-start-2 md:row-start-1 md:row-span-2">
+            <Review />
+          </div>
+          <div className="md:col-start-1 md:row-start-2">
+            <Ask />
+          </div>
+        </div>
+      </main>
+    </>
   );
 }

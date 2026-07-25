@@ -9,16 +9,17 @@ type Pt = { x: number; y: number };
 const W = 1000;
 const H = 700;
 
+// Node hues from the Apple-dark design foundations (match Ops bars + chips).
 const COLORS: Record<string, string> = {
-  task: "#ef4444",
-  note: "#3b82f6",
-  idea: "#eab308",
-  shopping: "#22c55e",
-  reference: "#a855f7",
-  person: "#ec4899",
-  event: "#f97316",
+  note: "#8e9ab0",
+  task: "#6e8cf0",
+  idea: "#a583ea",
+  shopping: "#63be7e",
+  reference: "#55beb4",
+  person: "#e5a063",
+  event: "#e87d9a",
 };
-const color = (t: string) => COLORS[t] ?? "#9ca3af";
+const color = (t: string) => COLORS[t] ?? "#8e9ab0";
 
 // A small Fruchterman-Reingold-style force layout, computed in the browser.
 function layout(nodes: Node[], edges: Edge[]): Pt[] {
@@ -75,9 +76,29 @@ function layout(nodes: Node[], edges: Edge[]): Pt[] {
   return p;
 }
 
+// Fit the viewBox around the laid-out nodes (with padding) so the canvas opens
+// framed on the graph rather than clustered in a corner.
+function fitView(pts: Pt[]): { x: number; y: number; w: number; h: number } {
+  if (pts.length === 0) return { x: 0, y: 0, w: W, h: H };
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const p of pts) {
+    minX = Math.min(minX, p.x);
+    minY = Math.min(minY, p.y);
+    maxX = Math.max(maxX, p.x);
+    maxY = Math.max(maxY, p.y);
+  }
+  const pad = 80;
+  return {
+    x: minX - pad,
+    y: minY - pad,
+    w: Math.max(300, maxX - minX + pad * 2),
+    h: Math.max(300, maxY - minY + pad * 2),
+  };
+}
+
 export default function Graph({ nodes, edges }: { nodes: Node[]; edges: Edge[] }) {
   const [pos, setPos] = useState<Pt[]>(() => layout(nodes, edges));
-  const [view, setView] = useState({ x: 0, y: 0, w: W, h: H });
+  const [view, setView] = useState(() => fitView(pos));
   const svgRef = useRef<SVGSVGElement>(null);
   const drag = useRef<{ node: number | null; panning: boolean; sx: number; sy: number; vx: number; vy: number }>(
     { node: null, panning: false, sx: 0, sy: 0, vx: 0, vy: 0 }
@@ -141,21 +162,12 @@ export default function Graph({ nodes, edges }: { nodes: Node[]; edges: Edge[] }
   const types = [...new Set(nodes.map((n) => n.type))];
 
   return (
-    <div>
-      <div className="mb-2 flex flex-wrap gap-2 text-xs">
-        {types.map((t) => (
-          <span key={t} className="flex items-center gap-1 opacity-80">
-            <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: color(t) }} />
-            {t}
-          </span>
-        ))}
-        <span className="opacity-50">· drag nodes · scroll to zoom · drag background to pan</span>
-      </div>
+    <div className="relative">
       <svg
         ref={svgRef}
         viewBox={`${view.x} ${view.y} ${view.w} ${view.h}`}
-        className="w-full touch-none rounded-lg border border-black/10 bg-black/[0.02] dark:border-white/10 dark:bg-white/[0.02]"
-        style={{ height: "min(70vh, 620px)" }}
+        className="w-full touch-none rounded-card border border-hairline bg-[#08080b]"
+        style={{ height: "min(72vh, 640px)" }}
         onPointerDown={onBgDown}
         onPointerMove={onMove}
         onPointerUp={onUp}
@@ -166,20 +178,31 @@ export default function Graph({ nodes, edges }: { nodes: Node[]; edges: Edge[] }
           const a = pos[idx.get(e.source)!];
           const b = pos[idx.get(e.target)!];
           if (!a || !b) return null;
-          return <line key={i} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke="currentColor" strokeOpacity={0.15} />;
+          return <line key={i} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke="#ffffff" strokeOpacity={0.1} />;
         })}
         {nodes.map((nd, i) => (
           <g key={nd.id} transform={`translate(${pos[i].x},${pos[i].y})`} onPointerDown={onNodeDown(i)} className="cursor-grab">
-            <circle r={8} fill={color(nd.type)} stroke="white" strokeWidth={1.5} />
+            <circle r={9} fill={color(nd.type)} />
             <title>{nd.title} ({nd.type})</title>
             {showLabels && (
-              <text x={11} y={4} fontSize={11} fill="currentColor" className="pointer-events-none select-none">
+              <text x={13} y={4} fontSize={11} fill="rgba(255,255,255,0.7)" className="pointer-events-none select-none">
                 {nd.title.length > 28 ? nd.title.slice(0, 28) + "…" : nd.title}
               </text>
             )}
           </g>
         ))}
       </svg>
+
+      {/* floating material legend */}
+      <div className="absolute bottom-4 left-4 flex flex-wrap gap-3 rounded-2xl border border-hairline-2 bg-material-2 px-4 py-2.5 backdrop-blur-[20px]">
+        {types.map((t) => (
+          <span key={t} className="flex items-center gap-1.5 text-[11px] font-semibold text-ink-2">
+            <span className="inline-block h-[7px] w-[7px] rounded-full" style={{ background: color(t) }} />
+            {t}
+          </span>
+        ))}
+      </div>
+      <div className="mt-2 px-1 text-xs text-ink-3">Drag nodes · scroll to zoom · drag background to pan</div>
     </div>
   );
 }

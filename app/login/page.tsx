@@ -21,12 +21,20 @@ export default async function LoginPage({
   }
 
   return (
-    <main className="mx-auto flex w-full max-w-sm flex-1 flex-col justify-center px-4 py-16">
-      <h1 className="text-2xl font-semibold tracking-tight">Obsidian-X</h1>
-      <p className="mt-1 mb-8 text-sm opacity-60">
-        Sign in with your email to open your second brain.
-      </p>
-      <LoginForm initialError={error} />
+    <main className="flex flex-1 flex-col items-center justify-center px-6 py-16">
+      <div className="flex w-full max-w-sm flex-col items-center rounded-[24px] border border-hairline bg-surface-1 px-8 py-11 text-center shadow-[0_24px_60px_rgba(0,0,0,0.4)]">
+        <div className="mb-5 flex h-16 w-16 items-center justify-center rounded-[20px] border border-hairline-2 bg-[linear-gradient(160deg,#2a2a36,#16161c)]">
+          <div className="h-5 w-5 rotate-45 rounded-[5px] bg-accent-text" />
+        </div>
+        <h1 className="text-[24px] font-bold tracking-[-0.02em]">Obsidian-X</h1>
+        <p className="mb-8 mt-1.5 text-sm text-ink-2">Your second brain. Just you.</p>
+        <LoginForm initialError={error} />
+        <p className="mt-5 text-[13px] leading-relaxed text-ink-3">
+          A sign-in link lands in your inbox.
+          <br />
+          No passwords here.
+        </p>
+      </div>
     </main>
   );
 }

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { SectionLabel } from "./ui";
 
 type Source = {
   n: number;
@@ -46,64 +47,59 @@ export default function Ask() {
 
   return (
     <section>
-      <h2 className="mb-2 text-sm font-medium uppercase tracking-wide opacity-60">
-        Ask
-      </h2>
-      <div className="flex gap-2">
-        <input
-          value={question}
-          onChange={(e) => setQuestion(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") ask();
-          }}
-          placeholder="Ask your brain a question…"
-          className="w-full rounded-lg border border-black/15 bg-transparent px-3 py-2 text-sm outline-none focus:border-black/40 dark:border-white/20 dark:focus:border-white/50"
-        />
-        <button
-          onClick={ask}
-          disabled={asking || !question.trim()}
-          className="shrink-0 rounded-md bg-foreground px-4 py-2 text-sm font-medium text-background transition disabled:opacity-40"
-        >
-          {asking ? "…" : "Ask"}
-        </button>
-      </div>
-
-      {error && <p className="mt-2 text-sm text-red-500">{error}</p>}
-
-      {result && (
-        <div className="mt-3 space-y-3">
-          <p className="whitespace-pre-wrap text-sm leading-relaxed">
-            {result.answer}
-          </p>
-          {result.sources.length > 0 && (
-            <div className="border-t border-black/10 pt-3 dark:border-white/15">
-              <p className="mb-1 text-xs font-medium uppercase tracking-wide opacity-50">
-                Sources
-              </p>
-              <ul className="space-y-1 text-xs">
-                {result.sources.map((s) => (
-                  <li key={s.id} className="opacity-80">
-                    <span className="opacity-50">[{s.n}]</span>{" "}
-                    {s.vault_url ? (
-                      <a
-                        href={s.vault_url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="underline"
-                      >
-                        {s.title}
-                      </a>
-                    ) : (
-                      s.title
-                    )}{" "}
-                    <span className="opacity-50">({s.type})</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
+      <SectionLabel className="mb-2.5 px-1">Ask</SectionLabel>
+      <div className="flex flex-col gap-3.5 rounded-card border border-hairline bg-surface-1 p-4">
+        <div className="flex h-11 items-center gap-2 rounded-control border border-hairline bg-surface-2 px-3.5 transition focus-within:border-accent focus-within:shadow-[0_0_0_3px_rgba(80,107,242,0.25)]">
+          <input
+            value={question}
+            onChange={(e) => setQuestion(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") ask();
+            }}
+            placeholder="Ask your brain a question…"
+            className="w-full bg-transparent text-[15px] text-ink outline-none placeholder:text-ink-3"
+          />
+          <button
+            onClick={ask}
+            disabled={asking || !question.trim()}
+            className="shrink-0 text-[13px] font-semibold text-accent-text transition disabled:opacity-40"
+          >
+            {asking ? "…" : "Ask"}
+          </button>
         </div>
-      )}
+
+        {error && <p className="text-sm text-danger">{error}</p>}
+
+        {result && (
+          <>
+            <p className="whitespace-pre-wrap text-[15px] leading-relaxed text-ink">{result.answer}</p>
+            {result.sources.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {result.sources.map((s) =>
+                  s.vault_url ? (
+                    <a
+                      key={s.id}
+                      href={s.vault_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1.5 rounded-[10px] bg-white/[0.06] px-2.5 py-1.5 text-xs font-semibold text-accent-text transition hover:bg-white/[0.1]"
+                    >
+                      ↗ {s.title}
+                    </a>
+                  ) : (
+                    <span
+                      key={s.id}
+                      className="inline-flex items-center gap-1.5 rounded-[10px] bg-white/[0.06] px-2.5 py-1.5 text-xs font-semibold text-accent-text"
+                    >
+                      ↗ {s.title}
+                    </span>
+                  )
+                )}
+              </div>
+            )}
+          </>
+        )}
+      </div>
     </section>
   );
 }

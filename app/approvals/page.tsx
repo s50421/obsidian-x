@@ -1,8 +1,9 @@
 import { redirect } from "next/navigation";
-import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { isOwner } from "@/lib/owner";
+import AppNav from "../components/AppNav";
+import { SectionLabel, TypeChip } from "../components/ui";
 import ApprovalButtons from "./ApprovalButtons";
 
 export const dynamic = "force-dynamic";
@@ -26,12 +27,6 @@ function ago(iso: string): string {
   return `${Math.floor(s / 86400)}d ago`;
 }
 
-const STATUS_STYLE: Record<string, string> = {
-  pending: "bg-amber-500/15 text-amber-700 dark:text-amber-400",
-  approved: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400",
-  rejected: "bg-black/10 opacity-60 dark:bg-white/10",
-};
-
 export default async function ApprovalsPage() {
   const supabase = await createClient();
   const {
@@ -52,78 +47,82 @@ export default async function ApprovalsPage() {
   const decided = proposals.filter((p) => p.status !== "pending");
 
   return (
-    <main className="mx-auto w-full max-w-2xl flex-1 px-4 py-6 sm:py-10">
-      <header className="mb-8 flex items-center justify-between">
-        <h1 className="text-xl font-semibold tracking-tight">Approvals</h1>
-        <Link
-          href="/"
-          className="rounded-md border border-black/15 px-3 py-1.5 text-xs opacity-70 transition hover:opacity-100 dark:border-white/20"
-        >
-          ← Home
-        </Link>
-      </header>
+    <>
+      <AppNav />
+      <main className="mx-auto w-full max-w-4xl flex-1 px-4 pb-28 pt-3 md:px-8 md:pb-12 md:pt-8">
+        <div className="mb-5 md:hidden">
+          <h1 className="text-[28px] font-bold tracking-[-0.022em]">Approvals</h1>
+          <p className="mt-0.5 text-[13px] text-ink-2">{pending.length} proposed tasks waiting</p>
+        </div>
 
-      <section className="mb-8">
-        <h2 className="mb-2 text-sm font-medium uppercase tracking-wide opacity-60">
-          Pending ({pending.length})
-        </h2>
-        {pending.length === 0 ? (
-          <p className="text-sm opacity-60">Nothing waiting on you.</p>
-        ) : (
-          <ul className="space-y-2">
-            {pending.map((p) => (
-              <li
-                key={p.id}
-                className="flex items-center justify-between gap-3 rounded-lg border border-black/10 p-3 dark:border-white/10"
-              >
-                <div className="min-w-0">
-                  <div className="truncate text-sm font-medium">{p.title ?? "(untitled)"}</div>
-                  <div className="text-xs opacity-60">
-                    {p.kind} · from {p.source ?? "?"} · {ago(p.created_at)}
-                  </div>
-                </div>
-                <ApprovalButtons id={p.id} />
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-
-      <section>
-        <h2 className="mb-2 text-sm font-medium uppercase tracking-wide opacity-60">
-          History
-        </h2>
-        {decided.length === 0 ? (
-          <p className="text-sm opacity-60">No decisions yet.</p>
-        ) : (
-          <ul className="divide-y divide-black/10 text-sm dark:divide-white/10">
-            {decided.map((p) => (
-              <li key={p.id} className="flex items-center justify-between gap-3 py-2">
-                <span className="min-w-0 truncate">
-                  {p.result?.url ? (
-                    <a
-                      href={p.result.url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="font-medium underline decoration-dotted underline-offset-2"
-                    >
-                      {p.title ?? "(untitled)"}
-                    </a>
-                  ) : (
-                    <span className="font-medium">{p.title ?? "(untitled)"}</span>
-                  )}{" "}
-                  <span className="opacity-50">· {p.kind}</span>
-                </span>
-                <span
-                  className={`shrink-0 rounded px-2 py-0.5 text-xs ${STATUS_STYLE[p.status] ?? ""}`}
+        <div className="grid grid-cols-1 gap-7 md:grid-cols-[1fr_340px] md:items-start">
+          <section className="flex flex-col gap-3">
+            <SectionLabel className="px-1">Pending</SectionLabel>
+            {pending.length === 0 ? (
+              <div className="flex flex-col items-center gap-1.5 rounded-card border border-dashed border-hairline-2 p-7 text-center">
+                <div className="flex h-9 w-9 items-center justify-center rounded-control bg-white/[0.06] text-ink-3">✓</div>
+                <div className="text-[15px] font-semibold">Nothing waiting on you</div>
+                <div className="text-[13px] text-ink-2">Proposed tasks will land here.</div>
+              </div>
+            ) : (
+              pending.map((p) => (
+                <div
+                  key={p.id}
+                  className="flex flex-col gap-3 rounded-card border border-hairline bg-surface-1 p-4 md:flex-row md:items-center md:gap-5"
                 >
-                  {p.status}
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-    </main>
+                  <div className="flex min-w-0 flex-1 flex-col gap-2">
+                    <TypeChip type="task" />
+                    <div className="text-[16px] font-semibold leading-snug">{p.title ?? "(untitled)"}</div>
+                    <div className="text-[13px] text-ink-2">
+                      {p.kind} · from {p.source ?? "?"} · {ago(p.created_at)}
+                    </div>
+                  </div>
+                  <ApprovalButtons id={p.id} />
+                </div>
+              ))
+            )}
+          </section>
+
+          <section className="flex flex-col gap-3">
+            <SectionLabel className="px-1">History</SectionLabel>
+            {decided.length === 0 ? (
+              <p className="px-1 text-sm text-ink-2">No decisions yet.</p>
+            ) : (
+              <div className="overflow-hidden rounded-card border border-hairline bg-surface-1">
+                {decided.map((p, idx) => (
+                  <div
+                    key={p.id}
+                    className={`flex items-center gap-2.5 p-4 ${idx > 0 ? "border-t border-hairline" : ""}`}
+                  >
+                    <span
+                      className="h-1.5 w-1.5 shrink-0 rounded-full"
+                      style={{ background: p.status === "approved" ? "#93d8a8" : "rgba(255,255,255,0.3)" }}
+                    />
+                    <div className="min-w-0 flex-1 truncate text-sm">
+                      {p.result?.url ? (
+                        <a href={p.result.url} target="_blank" rel="noreferrer" className="font-medium text-ink hover:text-accent-text">
+                          {p.title ?? "(untitled)"}
+                        </a>
+                      ) : (
+                        <span className="font-medium">{p.title ?? "(untitled)"}</span>
+                      )}{" "}
+                      <span className="text-xs text-ink-3">
+                        · {p.status}
+                        {p.decided_at ? ` ${ago(p.decided_at)}` : ""}
+                      </span>
+                    </div>
+                    {p.result?.url && (
+                      <a href={p.result.url} target="_blank" rel="noreferrer" className="text-[13px] font-semibold text-accent-text">
+                        ↗
+                      </a>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+        </div>
+      </main>
+    </>
   );
 }

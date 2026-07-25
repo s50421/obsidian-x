@@ -31,22 +31,22 @@ export default function ApprovalButtons({ id }: { id: string }) {
   }
 
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex shrink-0 items-center gap-2.5">
       <button
         onClick={() => act("approve")}
         disabled={busy !== null}
-        className="rounded-md bg-emerald-600 px-3 py-1 text-xs font-medium text-white transition hover:bg-emerald-500 disabled:opacity-50"
+        className="h-11 flex-1 rounded-control bg-accent px-6 text-[14px] font-semibold text-white transition disabled:opacity-50 md:flex-none"
       >
         {busy === "approve" ? "…" : "Approve"}
       </button>
       <button
         onClick={() => act("reject")}
         disabled={busy !== null}
-        className="rounded-md border border-black/15 px-3 py-1 text-xs transition hover:bg-black/5 disabled:opacity-50 dark:border-white/20 dark:hover:bg-white/10"
+        className="h-11 flex-1 rounded-control bg-white/[0.08] px-6 text-[14px] font-semibold text-danger transition disabled:opacity-50 md:flex-none"
       >
         {busy === "reject" ? "…" : "Reject"}
       </button>
-      {error && <span className="text-xs text-red-600">{error}</span>}
+      {error && <span className="text-xs text-danger">{error}</span>}
     </div>
   );
 }

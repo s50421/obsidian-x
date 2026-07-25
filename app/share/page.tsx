@@ -44,21 +44,21 @@ function ShareInner() {
 
   return (
     <main className="mx-auto flex w-full max-w-md flex-1 flex-col items-center justify-center px-4 py-16 text-center">
-      {state === "saving" && <p className="text-sm opacity-70">🧠 Saving to your brain…</p>}
+      {state === "saving" && <p className="text-sm text-ink-2">🧠 Saving to your brain…</p>}
       {state === "done" && (
         <>
-          <p className="text-lg font-medium">🧠 Saved</p>
-          {detail && <p className="mt-1 text-sm opacity-70">{detail}</p>}
+          <p className="text-lg font-semibold">🧠 Saved</p>
+          {detail && <p className="mt-1 text-sm text-ink-2">{detail}</p>}
         </>
       )}
-      {state === "empty" && <p className="text-sm opacity-70">Nothing to save.</p>}
+      {state === "empty" && <p className="text-sm text-ink-2">Nothing to save.</p>}
       {state === "error" && (
         <>
-          <p className="text-lg font-medium text-red-500">Couldn&apos;t save</p>
-          <p className="mt-1 text-sm opacity-70">{detail}</p>
+          <p className="text-lg font-semibold text-danger">Couldn&apos;t save</p>
+          <p className="mt-1 text-sm text-ink-2">{detail}</p>
         </>
       )}
-      <Link href="/" className="mt-6 rounded-md border border-black/15 px-4 py-2 text-sm opacity-80 transition hover:opacity-100 dark:border-white/20">
+      <Link href="/" className="mt-6 rounded-control bg-white/[0.08] px-5 py-2.5 text-sm font-semibold text-ink transition hover:bg-white/[0.12]">
         Open Obsidian-X
       </Link>
     </main>

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { enqueue, queueSize, flushQueue } from "@/lib/offline-queue";
+import { SectionLabel, TypeChip, PriorityChip } from "./ui";
 
 function pickMimeType(): string | undefined {
   if (typeof MediaRecorder === "undefined") return undefined;
@@ -60,6 +61,14 @@ type CaptureResult = {
 function formatDue(iso: string): string {
   const d = new Date(iso);
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+function NeutralChip({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="inline-flex items-center rounded-full bg-white/[0.06] px-2.5 py-0.5 text-xs font-semibold text-ink-2">
+      {children}
+    </span>
+  );
 }
 
 export default function Capture() {
@@ -189,97 +198,112 @@ export default function Capture() {
 
   return (
     <section>
-      <div className="mb-2 flex items-center justify-between">
-        <h2 className="text-sm font-medium uppercase tracking-wide opacity-60">
-          Capture
-        </h2>
+      <div className="mb-2.5 flex items-center justify-between px-1">
+        <SectionLabel>Capture</SectionLabel>
         {pending > 0 && (
-          <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-xs text-amber-700 dark:text-amber-400">
+          <span
+            className="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold"
+            style={{ background: "rgba(240,194,106,0.14)", color: "#f0c26a" }}
+          >
             {pending} queued offline
           </span>
         )}
       </div>
-      <textarea
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        onKeyDown={(e) => {
-          if ((e.metaKey || e.ctrlKey) && e.key === "Enter") save();
-        }}
-        placeholder="Type a thought, note, task, idea…  (⌘/Ctrl + Enter to save)"
-        rows={5}
-        className="w-full resize-y rounded-lg border border-black/15 bg-transparent p-3 text-sm outline-none focus:border-black/40 dark:border-white/20 dark:focus:border-white/50"
-      />
-      <div className="mt-2 flex items-center gap-3">
-        <button
-          onClick={save}
-          disabled={saving || !text.trim()}
-          className="rounded-md bg-foreground px-4 py-2 text-sm font-medium text-background transition disabled:opacity-40"
-        >
-          {saving ? "Saving…" : "Save"}
-        </button>
-        <button
-          onClick={recording ? stopRecording : startRecording}
-          disabled={saving || transcribing}
-          className={`rounded-md border px-3 py-2 text-sm font-medium transition disabled:opacity-40 ${
-            recording
-              ? "border-red-500/50 bg-red-500/10 text-red-600"
-              : "border-black/15 hover:bg-black/5 dark:border-white/20 dark:hover:bg-white/10"
-          }`}
-          title="Record a voice note"
-        >
-          {recording ? "⏹ Stop" : transcribing ? "Transcribing…" : "🎤 Speak"}
-        </button>
-        {error && <span className="text-sm text-red-500">{error}</span>}
-        {notice && <span className="text-sm opacity-70">{notice}</span>}
+
+      <div className="flex flex-col gap-3 rounded-card border border-hairline bg-surface-1 p-4">
+        <textarea
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            if ((e.metaKey || e.ctrlKey) && e.key === "Enter") save();
+          }}
+          placeholder="Jot anything — a task, an idea, a name…  (⌘/Ctrl + Enter)"
+          rows={3}
+          className="min-h-16 w-full resize-y bg-transparent text-[16px] leading-relaxed text-ink outline-none placeholder:text-ink-3"
+        />
+        <div className="flex gap-2.5 md:justify-end">
+          <button
+            onClick={save}
+            disabled={saving || !text.trim()}
+            className="h-11 flex-1 rounded-control bg-accent text-[15px] font-semibold text-white transition disabled:opacity-40 md:flex-none md:px-7"
+          >
+            {saving ? "Saving…" : "Save"}
+          </button>
+          <button
+            onClick={recording ? stopRecording : startRecording}
+            disabled={saving || transcribing}
+            className={`flex h-11 flex-1 items-center justify-center gap-2 rounded-control text-[15px] font-semibold transition disabled:opacity-40 md:flex-none md:px-5 ${
+              recording ? "bg-accent-soft text-accent-text" : "bg-white/[0.08] text-ink"
+            }`}
+            title="Record a voice note"
+          >
+            {recording ? (
+              <>
+                <span
+                  className="h-2 w-2 rounded-full"
+                  style={{ background: "#f49a91", animation: "obx-pulse 1.1s infinite" }}
+                />
+                Stop
+              </>
+            ) : transcribing ? (
+              "Transcribing…"
+            ) : (
+              "🎤 Speak"
+            )}
+          </button>
+        </div>
       </div>
 
+      {(error || notice) && (
+        <p className={`mt-2 px-1 text-sm ${error ? "text-danger" : "text-ink-2"}`}>{error ?? notice}</p>
+      )}
+
       {result && (
-        <div className="mt-3 space-y-2">
+        <div className="mt-3 space-y-2.5">
           {result.split && (
-            <p className="text-xs opacity-60">
-              Split into {result.created.length} notes.
-            </p>
+            <p className="px-1 text-xs text-ink-3">Split into {result.created.length} notes.</p>
           )}
           {result.created.map((c) => (
-            <div
-              key={c.item.id}
-              className="rounded-lg border border-black/10 p-3 text-sm dark:border-white/15"
-            >
+            <div key={c.item.id} className="rounded-card border border-hairline bg-surface-1 p-4 text-[15px]">
               <div className="flex flex-wrap items-center gap-2">
-                <span className="font-medium">{c.item.title}</span>
-                <Badge>{c.item.type}</Badge>
-                <Badge>priority: {c.item.priority}</Badge>
-                {c.due_at && <Badge>due {formatDue(c.due_at)}</Badge>}
+                <TypeChip type={c.item.type} />
+                <PriorityChip priority={c.item.priority} />
+                {c.due_at && <NeutralChip>due {formatDue(c.due_at)}</NeutralChip>}
                 {(c.item.tags ?? []).map((t) => (
-                  <Badge key={t}>#{t}</Badge>
+                  <NeutralChip key={t}>#{t}</NeutralChip>
                 ))}
               </div>
 
+              <div className="mt-2 leading-snug">{c.item.title}</div>
+
               {c.needs_review && (
-                <div className="mt-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-xs text-amber-700 dark:text-amber-400">
-                  Needs review — {c.review_reason ?? "please confirm"} · see Review below
+                <div
+                  className="mt-2 rounded-control px-3 py-1.5 text-xs font-medium"
+                  style={{ background: "rgba(240,194,106,0.14)", color: "#f0c26a" }}
+                >
+                  Needs review — {c.review_reason ?? "please confirm"} · see Review
                 </div>
               )}
 
               {c.entities.length > 0 && (
-                <div className="mt-2 text-xs opacity-70">
+                <div className="mt-2 text-xs text-ink-2">
                   People/places: {c.entities.map((e) => e.name).join(", ")}
                 </div>
               )}
 
               {c.links.length > 0 && (
-                <div className="mt-1 text-xs opacity-70">
+                <div className="mt-1 text-xs text-ink-2">
                   Linked to: {c.links.map((l) => l.title).join(", ")}
                 </div>
               )}
 
-              <div className="mt-2 text-xs opacity-70">
+              <div className="mt-2 text-xs">
                 {c.vault_url ? (
-                  <a href={c.vault_url} target="_blank" rel="noreferrer" className="underline">
-                    Written to vault: {c.vault_path}
+                  <a href={c.vault_url} target="_blank" rel="noreferrer" className="text-accent-text hover:underline">
+                    ↗ Written to vault: {c.vault_path}
                   </a>
                 ) : (
-                  <span className="text-amber-600">
+                  <span className="text-warn">
                     Saved to database, but vault write failed
                     {c.vaultError ? `: ${c.vaultError}` : ""}
                   </span>
@@ -290,13 +314,5 @@ export default function Capture() {
         </div>
       )}
     </section>
-  );
-}
-
-function Badge({ children }: { children: React.ReactNode }) {
-  return (
-    <span className="rounded-full border border-black/15 px-2 py-0.5 text-xs opacity-80 dark:border-white/20">
-      {children}
-    </span>
   );
 }

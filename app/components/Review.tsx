@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { SectionLabel, TypeChip } from "./ui";
 
 type ReviewItem = {
   id: string;
@@ -52,48 +53,47 @@ export default function Review() {
 
   return (
     <section>
-      <h2 className="mb-2 text-sm font-medium uppercase tracking-wide opacity-60">
-        Review <span className="opacity-60">({items.length})</span>
-      </h2>
-      <div className="space-y-2">
-        {items.map((i) => (
-          <div
-            key={i.id}
-            className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-sm"
-          >
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="font-medium">{i.title}</span>
-              <span className="rounded-full border border-black/15 px-2 py-0.5 text-xs opacity-80 dark:border-white/20">
-                {i.type}
-              </span>
-            </div>
-            <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
-              {i.review_reason ?? "please confirm"}
-            </p>
-            <div className="mt-2 flex gap-2">
-              <button
-                onClick={() => act(i.id, "approve")}
-                disabled={busy === i.id}
-                className="rounded-md bg-foreground px-3 py-1 text-xs font-medium text-background disabled:opacity-40"
-              >
-                Keep
-              </button>
-              {i.dup_candidate && (
+      <div className="mb-2.5 flex items-center justify-between px-1">
+        <SectionLabel>Review</SectionLabel>
+        <span className="text-xs font-semibold text-accent-text">{items.length} to triage</span>
+      </div>
+
+      <div className="overflow-hidden rounded-card border border-hairline bg-surface-1">
+        {items.map((i, idx) => (
+          <div key={i.id} className={idx > 0 ? "border-t border-hairline" : ""}>
+            <div className="flex flex-col gap-2.5 p-4">
+              <div className="flex flex-wrap items-center gap-2">
+                <TypeChip type={i.type} />
+                <span className="text-xs text-ink-3">
+                  {i.dup_title ? `vs. “${i.dup_title}”` : (i.review_reason ?? "please confirm")}
+                </span>
+              </div>
+              <div className="text-[15px] leading-snug">{i.title}</div>
+              <div className="flex gap-2">
                 <button
-                  onClick={() => act(i.id, "merge")}
+                  onClick={() => act(i.id, "approve")}
                   disabled={busy === i.id}
-                  className="rounded-md border border-black/20 px-3 py-1 text-xs disabled:opacity-40 dark:border-white/25"
+                  className="h-9 flex-1 rounded-[10px] bg-white/[0.08] text-[13px] font-semibold text-ink transition disabled:opacity-40"
                 >
-                  Merge (it&apos;s a duplicate)
+                  Keep
                 </button>
-              )}
-              <button
-                onClick={() => act(i.id, "delete")}
-                disabled={busy === i.id}
-                className="rounded-md border border-red-500/40 px-3 py-1 text-xs text-red-600 disabled:opacity-40 dark:text-red-400"
-              >
-                Delete
-              </button>
+                {i.dup_candidate && (
+                  <button
+                    onClick={() => act(i.id, "merge")}
+                    disabled={busy === i.id}
+                    className="h-9 flex-1 rounded-[10px] bg-accent-soft text-[13px] font-semibold text-accent-text transition disabled:opacity-40"
+                  >
+                    Merge
+                  </button>
+                )}
+                <button
+                  onClick={() => act(i.id, "delete")}
+                  disabled={busy === i.id}
+                  className="h-9 flex-1 rounded-[10px] bg-transparent text-[13px] font-semibold text-danger transition disabled:opacity-40"
+                >
+                  Delete
+                </button>
+              </div>
             </div>
           </div>
         ))}

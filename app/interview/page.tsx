@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import AppNav from "../components/AppNav";
 
 type Msg = { role: "assistant" | "user"; content: string };
 
@@ -49,64 +50,70 @@ export default function InterviewPage() {
     await next(hist);
   }
 
+  const questionNo = history.filter((m) => m.role === "assistant").length;
+
   return (
-    <main className="mx-auto flex w-full max-w-2xl flex-1 flex-col px-4 py-6 sm:py-10">
-      <header className="mb-4 flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-semibold tracking-tight">Interview</h1>
-          <p className="text-xs opacity-60">
-            I&apos;ll build a fuller picture of you — every answer is saved to your brain
-            {saved > 0 ? ` (${saved} so far)` : ""}.
-          </p>
-        </div>
-        <Link
-          href="/"
-          className="rounded-md border border-black/15 px-3 py-1.5 text-xs opacity-70 transition hover:opacity-100 dark:border-white/20"
-        >
-          Done
-        </Link>
-      </header>
-
-      <div className="flex-1 space-y-3 overflow-y-auto pb-4">
-        {history.map((m, i) => (
-          <div key={i} className={m.role === "assistant" ? "flex" : "flex justify-end"}>
-            <div
-              className={`max-w-[85%] rounded-2xl px-4 py-2 text-sm ${
-                m.role === "assistant"
-                  ? "bg-black/5 dark:bg-white/10"
-                  : "bg-foreground text-background"
-              }`}
-            >
-              {m.content}
-            </div>
+    <>
+      <AppNav hideMobileBar />
+      <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col px-4 md:px-8">
+        <div className="flex items-center justify-between border-b border-hairline py-3">
+          <div>
+            <h1 className="text-[20px] font-bold tracking-[-0.015em]">Interview</h1>
+            <p className="mt-0.5 text-xs text-ink-3">
+              Question {Math.max(1, questionNo)} · every answer is saved
+              {saved > 0 ? ` · ${saved} saved` : ""}
+            </p>
           </div>
-        ))}
-        {loading && <div className="flex"><div className="rounded-2xl bg-black/5 px-4 py-2 text-sm opacity-60 dark:bg-white/10">…</div></div>}
-        <div ref={bottomRef} />
-      </div>
+          <Link href="/" className="text-[13px] font-semibold text-ink-2 transition hover:text-ink">
+            Done
+          </Link>
+        </div>
 
-      <div className="sticky bottom-0 flex items-end gap-2 border-t border-black/10 bg-background pt-3 dark:border-white/10">
-        <textarea
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              send();
-            }
-          }}
-          rows={2}
-          placeholder="Your answer…  (Enter to send)"
-          className="flex-1 resize-none rounded-lg border border-black/15 bg-transparent p-2.5 text-sm outline-none focus:border-black/40 dark:border-white/20"
-        />
-        <button
-          onClick={send}
-          disabled={loading || !input.trim()}
-          className="rounded-md bg-foreground px-4 py-2.5 text-sm font-medium text-background transition disabled:opacity-40"
-        >
-          Send
-        </button>
-      </div>
-    </main>
+        <div className="flex flex-1 flex-col justify-end gap-3.5 overflow-y-auto py-5">
+          {history.map((m, i) => (
+            <div key={i} className={m.role === "assistant" ? "flex" : "flex justify-end"}>
+              <div
+                className={`max-w-[82%] px-4 py-3 text-[15px] leading-relaxed ${
+                  m.role === "assistant"
+                    ? "rounded-[18px] rounded-bl-[6px] border border-hairline bg-surface-2 text-ink"
+                    : "rounded-[18px] rounded-br-[6px] bg-accent-soft text-ink"
+                }`}
+              >
+                {m.content}
+              </div>
+            </div>
+          ))}
+          {loading && (
+            <div className="flex">
+              <div className="rounded-[18px] rounded-bl-[6px] bg-surface-2 px-4 py-3 text-[15px] text-ink-3">…</div>
+            </div>
+          )}
+          <div ref={bottomRef} />
+        </div>
+
+        <div className="sticky bottom-0 flex items-end gap-2.5 border-t border-hairline bg-base py-3 pb-[calc(12px+env(safe-area-inset-bottom))]">
+          <textarea
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                send();
+              }
+            }}
+            rows={1}
+            placeholder="Type your answer…"
+            className="max-h-32 flex-1 resize-none rounded-3xl border border-hairline bg-surface-2 px-4.5 py-3 text-[15px] text-ink outline-none transition placeholder:text-ink-3 focus:border-accent focus:shadow-[0_0_0_3px_rgba(80,107,242,0.25)]"
+          />
+          <button
+            onClick={send}
+            disabled={loading || !input.trim()}
+            className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-accent text-lg font-semibold text-white transition disabled:opacity-40"
+          >
+            ↑
+          </button>
+        </div>
+      </main>
+    </>
   );
 }
