@@ -32,7 +32,9 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className="h-full antialiased">
-      <body className="flex min-h-full flex-col bg-base text-ink">
+      {/* suppressHydrationWarning: browser extensions (e.g. Grammarly) inject
+          attributes onto <body> before hydration; scoped to this element only. */}
+      <body className="flex min-h-full flex-col bg-base text-ink" suppressHydrationWarning>
         {children}
         <RegisterSW />
       </body>
