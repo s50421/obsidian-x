@@ -80,8 +80,10 @@ export default function Capture() {
   const [pending, setPending] = useState(0);
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
+  const fileRef = useRef<HTMLInputElement>(null);
 
   // Keep the pending badge in sync and flush the queue when possible.
   useEffect(() => {
@@ -196,6 +198,37 @@ export default function Capture() {
     setRecording(false);
   }, []);
 
+  // Document upload: extract text server-side, classify, store — shows the same
+  // result card as a typed capture.
+  const onUploadFile = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    e.target.value = ""; // allow re-picking the same file
+    if (!f) return;
+    if (f.size > 4 * 1024 * 1024) {
+      setError("File too large (max 4 MB).");
+      return;
+    }
+    setUploading(true);
+    setError(null);
+    setResult(null);
+    setNotice(`Reading ${f.name}…`);
+    try {
+      const fd = new FormData();
+      fd.append("file", f);
+      const res = await fetch("/api/upload", { method: "POST", body: fd });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `upload failed (${res.status})`);
+      setResult(data);
+      setNotice(null);
+      window.dispatchEvent(new Event("obx:captured"));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setNotice(null);
+    } finally {
+      setUploading(false);
+    }
+  }, []);
+
   return (
     <section>
       <div className="mb-2.5 flex items-center justify-between px-1">
@@ -224,14 +257,14 @@ export default function Capture() {
         <div className="flex gap-2.5 md:justify-end">
           <button
             onClick={save}
-            disabled={saving || !text.trim()}
+            disabled={saving || uploading || !text.trim()}
             className="h-11 flex-1 rounded-control bg-accent text-[15px] font-semibold text-white transition disabled:opacity-40 md:flex-none md:px-7"
           >
             {saving ? "Saving…" : "Save"}
           </button>
           <button
             onClick={recording ? stopRecording : startRecording}
-            disabled={saving || transcribing}
+            disabled={saving || transcribing || uploading}
             className={`flex h-11 flex-1 items-center justify-center gap-2 rounded-control text-[15px] font-semibold transition disabled:opacity-40 md:flex-none md:px-5 ${
               recording ? "bg-accent-soft text-accent-text" : "bg-white/[0.08] text-ink"
             }`}
@@ -250,6 +283,21 @@ export default function Capture() {
             ) : (
               "🎤 Speak"
             )}
+          </button>
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".pdf,.docx,.txt,.md,.markdown,.csv,.tsv,.json,.log,application/pdf,text/plain"
+            onChange={onUploadFile}
+            className="hidden"
+          />
+          <button
+            onClick={() => fileRef.current?.click()}
+            disabled={saving || transcribing || uploading}
+            className="flex h-11 items-center justify-center rounded-control bg-white/[0.08] px-4 text-[15px] font-semibold text-ink transition disabled:opacity-40"
+            title="Upload a document (PDF, DOCX, text)"
+          >
+            {uploading ? "…" : "📎"}
           </button>
         </div>
       </div>
