@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { enqueue, queueSize, flushQueue } from "@/lib/offline-queue";
 import { SectionLabel, TypeChip, PriorityChip } from "./ui";
+import { downscaleImage, isImageFile } from "./downscaleImage";
 
 function pickMimeType(): string | undefined {
   if (typeof MediaRecorder === "undefined") return undefined;
@@ -201,18 +202,26 @@ export default function Capture() {
   // Document upload: extract text server-side, classify, store — shows the same
   // result card as a typed capture.
   const onUploadFile = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0];
+    const picked = e.target.files?.[0];
     e.target.value = ""; // allow re-picking the same file
-    if (!f) return;
-    if (f.size > 4 * 1024 * 1024) {
-      setError("File too large (max 4 MB).");
-      return;
-    }
+    if (!picked) return;
     setUploading(true);
     setError(null);
     setResult(null);
-    setNotice(`Reading ${f.name}…`);
+    setNotice(`Reading ${picked.name}…`);
     try {
+      // Shrink big images client-side so photos fit under the 4 MB cap.
+      const f = isImageFile(picked) ? await downscaleImage(picked) : picked;
+      if (f.size > 4 * 1024 * 1024) {
+        setError(
+          isImageFile(picked)
+            ? "Image too large (max 4 MB) even after shrinking — try a screenshot or JPEG."
+            : "File too large (max 4 MB)."
+        );
+        setNotice(null);
+        setUploading(false);
+        return;
+      }
       const fd = new FormData();
       fd.append("file", f);
       const res = await fetch("/api/upload", { method: "POST", body: fd });

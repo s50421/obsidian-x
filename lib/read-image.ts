@@ -17,40 +17,54 @@ const PROMPT =
   "app/site or kind of content). If the image has no meaningful text or content, " +
   "output an empty string and nothing else.";
 
+const RETRY_STATUS = new Set([408, 429, 500, 502, 503, 529]);
+
 export async function readImage(
   dataBase64: string,
   mimeType: string
 ): Promise<{ text: string; usage: Usage }> {
   const model = process.env.OPENROUTER_VISION_MODEL || DEFAULT_MODEL;
   const mime = mimeType && mimeType.startsWith("image/") ? mimeType : "image/png";
-
-  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
-      "Content-Type": "application/json",
-      "HTTP-Referer": process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000",
-      "X-Title": "Obsidian-X",
-    },
-    body: JSON.stringify({
-      model,
-      temperature: 0,
-      usage: { include: true },
-      messages: [
-        {
-          role: "user",
-          content: [
-            { type: "text", text: PROMPT },
-            { type: "image_url", image_url: { url: `data:${mime};base64,${dataBase64}` } },
-          ],
-        },
-      ],
-    }),
+  const payload = JSON.stringify({
+    model,
+    temperature: 0,
+    usage: { include: true },
+    messages: [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: PROMPT },
+          { type: "image_url", image_url: { url: `data:${mime};base64,${dataBase64}` } },
+        ],
+      },
+    ],
   });
 
+  // One retry on transient upstream failures — vision calls can flake.
+  let res!: Response;
+  let lastDetail = "";
+  for (let attempt = 0; attempt < 2; attempt++) {
+    res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000",
+        "X-Title": "Obsidian-X",
+      },
+      body: payload,
+    });
+    if (res.ok) break;
+    lastDetail = await res.text().catch(() => "");
+    if (attempt === 0 && RETRY_STATUS.has(res.status)) {
+      await new Promise((r) => setTimeout(r, 800));
+      continue;
+    }
+    break;
+  }
+
   if (!res.ok) {
-    const detail = await res.text().catch(() => "");
-    throw new Error(`read-image ${res.status}: ${detail.slice(0, 300)}`);
+    throw new Error(`read-image ${res.status}: ${lastDetail.slice(0, 300)}`);
   }
 
   const data = await res.json();
