@@ -113,3 +113,26 @@ export async function deleteVaultNote(path: string): Promise<void> {
     branch,
   });
 }
+
+// v3.4 — write (create or update) an arbitrary file in the vault repo. Used by
+// the backup cron to commit a JSON snapshot of the brain (git history = versions).
+export async function writeVaultFile(path: string, content: string, message: string): Promise<void> {
+  const { owner, repo, branch } = repoParts();
+  const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
+  let sha: string | undefined;
+  try {
+    const existing = await octokit.repos.getContent({ owner, repo, path, ref: branch });
+    if (!Array.isArray(existing.data) && "sha" in existing.data) sha = existing.data.sha;
+  } catch {
+    // new file — no sha
+  }
+  await octokit.repos.createOrUpdateFileContents({
+    owner,
+    repo,
+    path,
+    message,
+    content: Buffer.from(content, "utf-8").toString("base64"),
+    branch,
+    ...(sha ? { sha } : {}),
+  });
+}

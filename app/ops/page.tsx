@@ -81,9 +81,18 @@ export default async function OpsPage() {
     <>
       <AppNav />
       <main className="mx-auto w-full max-w-4xl flex-1 px-4 pb-28 pt-3 md:px-8 md:pb-12 md:pt-8">
-        <div className="mb-5 md:mb-6">
-          <h1 className="text-[28px] font-bold tracking-[-0.022em] md:text-[22px]">Ops</h1>
-          <p className="mt-0.5 text-[13px] text-ink-2">Read-only</p>
+        <div className="mb-5 flex items-end justify-between md:mb-6">
+          <div>
+            <h1 className="text-[28px] font-bold tracking-[-0.022em] md:text-[22px]">Ops</h1>
+            <p className="mt-0.5 text-[13px] text-ink-2">Read-only</p>
+          </div>
+          <a
+            href="/api/export"
+            download
+            className="rounded-control bg-white/[0.08] px-4 py-2 text-[13px] font-semibold text-ink transition hover:bg-white/[0.12]"
+          >
+            ⭳ Export brain
+          </a>
         </div>
 
         <div className="mb-4 grid grid-cols-2 gap-2.5 md:grid-cols-4">
