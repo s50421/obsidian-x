@@ -3,6 +3,7 @@
     { "path": "/api/cron/consolidate", "schedule": "0 5 * * *" },
     { "path": "/api/cron/brief", "schedule": "0 14 * * *" },
     { "path": "/api/cron/clickup-sync", "schedule": "0 6 * * *" },
-    { "path": "/api/cron/weekly-review", "schedule": "0 1 * * 1" }
+    { "path": "/api/cron/weekly-review", "schedule": "0 1 * * 1" },
+    { "path": "/api/cron/followups", "schedule": "0 20 * * *" }
   ]
 }
