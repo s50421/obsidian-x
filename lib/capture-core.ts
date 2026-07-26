@@ -152,7 +152,13 @@ export async function storeEnrichedItem(
   }
 
   const action =
-    source === "email" ? "email_capture" : source === "upload" ? "document_upload" : "capture";
+    source === "email"
+      ? "email_capture"
+      : source === "upload"
+        ? "document_upload"
+        : source === "screenshot"
+          ? "screenshot_upload"
+          : "capture";
   await logAudit(admin, {
     user_id: userId,
     item_id: item.id,

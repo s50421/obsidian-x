@@ -287,7 +287,7 @@ export default function Capture() {
           <input
             ref={fileRef}
             type="file"
-            accept=".pdf,.docx,.txt,.md,.markdown,.csv,.tsv,.json,.log,application/pdf,text/plain"
+            accept=".pdf,.docx,.txt,.md,.markdown,.csv,.tsv,.json,.log,.png,.jpg,.jpeg,.webp,.gif,application/pdf,text/plain,image/*"
             onChange={onUploadFile}
             className="hidden"
           />
@@ -295,7 +295,7 @@ export default function Capture() {
             onClick={() => fileRef.current?.click()}
             disabled={saving || transcribing || uploading}
             className="flex h-11 items-center justify-center rounded-control bg-white/[0.08] px-4 text-[15px] font-semibold text-ink transition disabled:opacity-40"
-            title="Upload a document (PDF, DOCX, text)"
+            title="Upload a document or screenshot (PDF, DOCX, text, image)"
           >
             {uploading ? "…" : "📎"}
           </button>

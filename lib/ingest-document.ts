@@ -61,7 +61,8 @@ async function classifyDocument(text: string, filename: string, todayISO: string
 export async function ingestDocument(
   userId: string,
   fullText: string,
-  filename: string
+  filename: string,
+  source: string = "upload"
 ): Promise<CaptureOutcome> {
   const admin = createAdminClient();
   const todayISO = new Date().toISOString().slice(0, 10);
@@ -85,7 +86,7 @@ export async function ingestDocument(
   }
 
   const created = await storeEnrichedItem(admin, userId, item, {
-    source: "upload",
+    source,
     rawText: fullText,
     sensitive,
     confidence,
