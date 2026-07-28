@@ -32,6 +32,8 @@ export async function detectFollowups(
     .eq("status", "open")
     .is("valid_to", null)
     .neq("source", "apple-notes")
+    .neq("source", "system") // exclude our own digests/consolidations (they echo captures)
+    .in("type", ["note", "task", "idea", "event", "person"]) // not shopping/reference
     .gte("created_at", since)
     .order("created_at", { ascending: false })
     .limit(120);
@@ -45,10 +47,12 @@ export async function detectFollowups(
 
   const system =
     `You are a proactive assistant reviewing the owner's recent notes for their personal ` +
-    `second brain. Identify genuine COMMITMENTS / FOLLOW-UPS the owner made that are probably ` +
-    `NOT done yet — things they said they'd do, people to contact, promises, "I should / need ` +
-    `to / will / have to …". Be conservative: only clear, still-actionable items; skip vague ` +
-    `musings, things already done, and pure reference notes. Return ONLY JSON:\n` +
+    `second brain. Identify genuine, meaningful COMMITMENTS / FOLLOW-UPS the owner made that are ` +
+    `probably NOT done yet — specifically ones with another person, a deliverable, or a deadline ` +
+    `(e.g. "email Dani the contract", "follow up with the adjuster", "send the quote by Friday", ` +
+    `"call the accountant"). Be strict: SKIP routine to-dos, shopping/errands, one-line reminders, ` +
+    `vague musings, anything already done, reference notes, and system-generated digests. If in ` +
+    `doubt, leave it out — a quiet day is better than a noisy nudge. Return ONLY JSON:\n` +
     `{ "followups": [ { "index": <the item number above>, "commitment": "<short, in the owner's ` +
     `voice>", "action": "<one concrete next step>" } ] }. Empty array if nothing qualifies.`;
 
