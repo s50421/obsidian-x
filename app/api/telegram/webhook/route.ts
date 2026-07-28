@@ -12,6 +12,14 @@ import { applyProposal, rejectProposalById } from "@/lib/proposals";
 import { logAudit } from "@/lib/audit";
 import { logLlmUsage } from "@/lib/usage";
 import { sendMessage, answerCallbackQuery, editMessageText } from "@/lib/telegram";
+import {
+  resolveOwnerTz,
+  isValidIanaTimeZone,
+  getSettingValue,
+  setSettingValue,
+  describeSixThirty,
+  SETTINGS_KEY_TZ_OVERRIDE,
+} from "@/lib/tz";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -50,7 +58,13 @@ const HELP = [
   "• Done — “finished the report”, “dentist is booked”, “all done”",
   "• Reopen — “reopen the rent task”, “I didn't finish X”",
   "• Ask — “what do I owe?”, “when's my meeting?”",
+  "",
+  "One real command: /tz — check or change the timezone your 6:30am letter uses.",
 ].join("\n");
+
+// Text that suggests the owner is asking about timezone but the intent model
+// didn't recognize a /tz-shaped command (e.g. "what timezone are you using").
+const TIMEZONE_HINT_RE = /\btime\s?zone\b/i;
 
 export async function POST(req: Request) {
   // 1. Verify Telegram's secret token.
@@ -107,6 +121,12 @@ async function handleMessage(
     await sendMessage(HELP, { parse_mode: "plain" });
     return;
   }
+  // Timezone command — handled BEFORE the LLM intent step (v4.0 W4). Every
+  // other behavior below is unchanged.
+  if (/^\/tz(\s|$)/i.test(text)) {
+    await handleTzCommand(admin, userId, text);
+    return;
+  }
 
   const today = new Date().toISOString().slice(0, 10);
   const intent = await interpretIntent(text, today);
@@ -125,12 +145,82 @@ async function handleMessage(
     case "ask":
       await runAsk(userId, intent.query || text);
       break;
-    case "save":
     case "unknown":
+      // Didn't parse as a clear intent — if it reads like a timezone question,
+      // point at /tz instead of quietly filing it away as a note.
+      if (TIMEZONE_HINT_RE.test(text)) {
+        await sendTzHelp(admin, userId);
+        break;
+      }
+      await promptSave(admin, userId, text, intent.summary); // confirm before saving
+      break;
+    case "save":
     default:
       await promptSave(admin, userId, text, intent.summary); // confirm before saving
       break;
   }
+}
+
+// ---- /tz command (v4.0 W4) ---------------------------------------------------
+
+async function sendTzHelp(admin: SupabaseClient, userId: string): Promise<void> {
+  const tz = await resolveOwnerTz(admin, userId);
+  const override = await getSettingValue<string>(admin, userId, SETTINGS_KEY_TZ_OVERRIDE);
+  const mode = override && override !== "auto" ? "manual override" : "auto, from your calendar";
+  await sendMessage(
+    [
+      `🕐 Current timezone: ${tz} (${mode}).`,
+      "",
+      "To change it: /tz <IANA name>, e.g. /tz Europe/Berlin",
+      "Back to automatic: /tz auto",
+    ].join("\n"),
+    { parse_mode: "plain" }
+  );
+}
+
+async function handleTzCommand(admin: SupabaseClient, userId: string, text: string): Promise<void> {
+  const arg = text.replace(/^\/tz\s*/i, "").trim();
+
+  if (!arg) {
+    await sendTzHelp(admin, userId);
+    return;
+  }
+
+  if (arg.toLowerCase() === "auto") {
+    await setSettingValue(admin, userId, SETTINGS_KEY_TZ_OVERRIDE, "auto");
+    await logAudit(admin, {
+      user_id: userId,
+      action: "tz_override_cleared",
+      actor: "user",
+      detail: { via: "telegram" },
+    });
+    const tz = await resolveOwnerTz(admin, userId);
+    await sendMessage(
+      `🕐 Back to automatic — inferred from your calendar: ${tz}.\n${describeSixThirty(tz)}`,
+      { parse_mode: "plain" }
+    );
+    return;
+  }
+
+  if (!isValidIanaTimeZone(arg)) {
+    await sendMessage(
+      `⚠️ "${arg}" doesn't look like a valid timezone. Use an IANA name, e.g. Europe/Berlin, America/New_York, Asia/Kolkata.`,
+      { parse_mode: "plain" }
+    );
+    return;
+  }
+
+  await setSettingValue(admin, userId, SETTINGS_KEY_TZ_OVERRIDE, arg);
+  await logAudit(admin, {
+    user_id: userId,
+    action: "tz_override_set",
+    actor: "user",
+    detail: { via: "telegram", tz: arg },
+  });
+  await sendMessage(
+    `🕐 Timezone set to ${arg}. Your morning letter will now target 6:30am there.\n${describeSixThirty(arg)}`,
+    { parse_mode: "plain" }
+  );
 }
 
 // ---- callbacks: button taps -------------------------------------------------
