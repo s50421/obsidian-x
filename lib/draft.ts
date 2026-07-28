@@ -1,5 +1,5 @@
 import { createAdminClient } from "@/lib/supabase/admin";
-import { embed } from "@/lib/embed";
+import { embedText } from "@/lib/embed";
 import { chat } from "@/lib/openrouter";
 import { vaultUrl } from "@/lib/vault";
 import { logLlmUsage } from "@/lib/usage";
@@ -27,9 +27,10 @@ export async function draftForTask(userId: string, task: string): Promise<DraftR
   if (!t) return { draft: "Tell me what to draft — e.g. “email the accountant about Q3”.", sources: [] };
 
   const admin = createAdminClient();
-  const qEmbedding = await embed(t);
-  const { data: matches, error } = await admin.rpc("match_items", {
+  const qEmbedding = await embedText(t, userId);
+  const { data: matches, error } = await admin.rpc("match_items_v2", {
     query_embedding: qEmbedding,
+    query_text: t,
     match_count: 8,
     owner: userId,
   });

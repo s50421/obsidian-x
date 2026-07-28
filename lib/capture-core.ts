@@ -1,19 +1,38 @@
 import { createAdminClient } from "@/lib/supabase/admin";
 import { enrich, type EnrichedItem } from "@/lib/enrich";
-import { embed } from "@/lib/embed";
+import { embedText } from "@/lib/embed";
 import { writeVaultNote, vaultUrl } from "@/lib/vault";
 import { logAudit } from "@/lib/audit";
 import { logLlmUsage } from "@/lib/usage";
 import { detectSensitive } from "@/lib/sensitivity";
 
-// Similarity thresholds (cosine, 0..1). gte-small has a HIGH floor — even
-// distinct items score ~0.76–0.89 (measured: "Meeting with Dani" ~ "Meeting with
-// V-Bank" = 0.865), so low thresholds match everything. These are tuned above
-// that floor: auto-link only genuinely-related items, and flag a duplicate only
-// when it's near-identical (a true re-capture is ~0.95+).
-const LINK_THRESHOLD = 0.8; // clearly related -> auto-link
-const DUP_THRESHOLD = 0.93; // near-identical -> flag as a merge candidate
-const LOW_CONFIDENCE = 0.55;
+// Similarity thresholds (cosine, 0..1) against `items.embedding_v2`
+// (text-embedding-3-large @ 1024 dims via match_neighbors_v2).
+//
+// The old values (LINK 0.80 / DUP 0.93) were tuned for gte-small, whose
+// similarity FLOOR was ~0.76 — distinct items scored 0.83–0.89, so every
+// threshold had to be crammed into the top ~0.2 of the range. text-embedding-3
+// has a far lower floor and spreads scores across most of 0..1, so the old
+// numbers would now essentially never fire.
+//
+// !! PROVISIONAL — NOT YET MEASURED ON THE REAL CORPUS !!
+// The measurement pass (scripts/measure-similarity.mjs) could not run in the
+// build environment: egress to api.openai.com and *.supabase.co is blocked by
+// policy, so embedding_v2 has not been backfilled yet and no distribution
+// exists to tune against. These values are scaled from the known behaviour of
+// the text-embedding-3 family and are deliberately conservative on DUP (a false
+// duplicate flag is the exact failure v4.0 W1 exists to remove).
+//
+// BEFORE THE v4.0 DEPLOY, run:
+//   node --env-file=.env.local scripts/re-embed.mjs
+//   node --env-file=.env.local scripts/measure-similarity.mjs
+// then set LINK_THRESHOLD to the reported "NN p75 -> LINK candidate" and
+// DUP_THRESHOLD to the reported "NN p99 -> DUP candidate", sanity-checked
+// against the random-pair floor and the top-10 pair list, and replace this
+// block with the measured basis.
+const LINK_THRESHOLD = 0.5; // clearly related -> auto-link
+const DUP_THRESHOLD = 0.85; // near-identical -> flag as a merge candidate
+const LOW_CONFIDENCE = 0.55; // LLM confidence, not similarity — unchanged
 
 type Neighbor = {
   id: string;
@@ -71,9 +90,9 @@ export async function storeEnrichedItem(
 ): Promise<CreatedItem> {
   const { source, rawText, sensitive, confidence, split } = opts;
 
-  const embedding = await embed(opts.embedText ?? `${it.title}\n\n${it.body}`);
+  const embedding = await embedText(opts.embedText ?? `${it.title}\n\n${it.body}`, userId);
 
-  const { data: neigh } = await admin.rpc("match_neighbors", {
+  const { data: neigh } = await admin.rpc("match_neighbors_v2", {
     query_embedding: embedding,
     owner: userId,
     exclude_id: null,
@@ -109,7 +128,7 @@ export async function storeEnrichedItem(
       tags: it.tags,
       source,
       sensitive,
-      embedding,
+      embedding_v2: embedding,
       created_at: createdAt,
       valid_from: createdAt,
       due_at: dueAt,

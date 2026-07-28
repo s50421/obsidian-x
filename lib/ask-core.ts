@@ -1,5 +1,5 @@
 import { createAdminClient } from "@/lib/supabase/admin";
-import { embed } from "@/lib/embed";
+import { embedText } from "@/lib/embed";
 import { chat } from "@/lib/openrouter";
 import { vaultUrl } from "@/lib/vault";
 import { logLlmUsage } from "@/lib/usage";
@@ -25,8 +25,9 @@ export type AskSource = {
 
 export type AskResult = { answer: string; sources: AskSource[] };
 
-// Shared Ask pipeline: embed the question -> semantic retrieval (owner-scoped,
-// archived + superseded excluded via match_items) -> answer with inline citations.
+// Shared Ask pipeline: embed the question -> HYBRID retrieval (owner-scoped,
+// archived + superseded excluded via match_items_v2 — RRF over embedding_v2
+// cosine + full-text on items.fts) -> answer with inline citations.
 // Sensitive items are retrievable but their body is withheld from the cloud model.
 // Used by the /api/ask route and the Telegram webhook.
 export async function answerQuestion(
@@ -37,9 +38,12 @@ export async function answerQuestion(
   if (!q) return { answer: "Ask me something and I'll check your notes.", sources: [] };
 
   const admin = createAdminClient();
-  const qEmbedding = await embed(q);
-  const { data: matches, error } = await admin.rpc("match_items", {
+  const qEmbedding = await embedText(q, userId);
+  // The raw question is the lexical arm's input — websearch_to_tsquery drops
+  // stop words itself, so no pre-cleaning is wanted here.
+  const { data: matches, error } = await admin.rpc("match_items_v2", {
     query_embedding: qEmbedding,
+    query_text: q,
     match_count: 8,
     owner: userId,
   });

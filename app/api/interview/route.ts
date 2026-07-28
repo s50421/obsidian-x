@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { isOwner } from "@/lib/owner";
-import { embed } from "@/lib/embed";
+import { embedText } from "@/lib/embed";
 import { chat } from "@/lib/openrouter";
 import { logLlmUsage } from "@/lib/usage";
 
@@ -53,7 +53,7 @@ export async function POST(req: Request) {
     const question = prev?.role === "assistant" ? prev.content : "";
     const answer = last.content.trim();
     try {
-      const emb = await embed(answer);
+      const emb = await embedText(answer, user.id);
       const now = new Date().toISOString();
       const title = answer.split(/\s+/).slice(0, 8).join(" ").slice(0, 60) || "Interview note";
       await admin.from("items").insert({
@@ -66,7 +66,7 @@ export async function POST(req: Request) {
         priority: "low",
         tags: ["interview", "profile"],
         source: "interview",
-        embedding: emb,
+        embedding_v2: emb,
         created_at: now,
         valid_from: now,
         confidence: 1,
