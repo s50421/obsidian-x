@@ -17,23 +17,16 @@ import { cleanTitle, CONFIDENCE_BAR, JUNK_ARCHIVE_SCORE, scoreJunk } from "@/lib
 // has a far lower floor and spreads scores across most of 0..1, so the old
 // numbers would now essentially never fire.
 //
-// !! PROVISIONAL — NOT YET MEASURED ON THE REAL CORPUS !!
-// The measurement pass (scripts/measure-similarity.mjs) could not run in the
-// build environment: egress to api.openai.com and *.supabase.co is blocked by
-// policy, so embedding_v2 has not been backfilled yet and no distribution
-// exists to tune against. These values are scaled from the known behaviour of
-// the text-embedding-3 family and are deliberately conservative on DUP (a false
-// duplicate flag is the exact failure v4.0 W1 exists to remove).
-//
-// BEFORE THE v4.0 DEPLOY, run:
-//   node --env-file=.env.local scripts/re-embed.mjs
-//   node --env-file=.env.local scripts/measure-similarity.mjs
-// then set LINK_THRESHOLD to the reported "NN p75 -> LINK candidate" and
-// DUP_THRESHOLD to the reported "NN p99 -> DUP candidate", sanity-checked
-// against the random-pair floor and the top-10 pair list, and replace this
-// block with the measured basis.
-const LINK_THRESHOLD = 0.5; // clearly related -> auto-link
-const DUP_THRESHOLD = 0.85; // near-identical -> flag as a merge candidate
+// MEASURED 2026-07-28 on the live corpus (scripts/measure-similarity.mjs over the
+// retrieval set — not archived, valid_to null, N=29, the population that
+// match_neighbors_v2 actually searches). Unrelated floor (all-pairs mean) 0.232;
+// NN p75 -> LINK candidate 0.662; NN p99 -> DUP candidate 0.804 (top real pair was
+// 0.754, so 0/29 false dup-flags on the current live set). DUP stays deliberately
+// conservative — a false duplicate flag is the exact failure v4.0 W1 exists to
+// remove. Re-run and re-tune after the corpus reprocess promotes archived notes
+// into the live retrieval set.
+const LINK_THRESHOLD = 0.662; // clearly related -> auto-link (NN p75)
+const DUP_THRESHOLD = 0.804; // near-identical -> flag as a merge candidate (NN p99)
 // LLM confidence, not similarity — value unchanged (0.55), now shared with the
 // enrich/re-process paths via lib/title-standard.mjs so the no-half-baked bar is
 // one number across the whole system.

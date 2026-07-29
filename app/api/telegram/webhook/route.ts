@@ -464,15 +464,14 @@ function stripMarkdown(s: string): string {
     .trim();
 }
 
-// gte-small has a high similarity floor (even unrelated short text pairs score
-// ~0.75), so a fixed low threshold matches everything. Instead we look for a
-// candidate that clearly STANDS OUT: strong absolute score AND a margin over the
-// pack. STRONG separates a real match (~0.9) from the noise floor (~0.78).
-// PROVISIONAL for text-embedding-3-large @1024d (wider score spread than gte-small).
-// Finalize from scripts/measure-similarity.mjs output during the apply phase:
-// STRONG = NN p50; MARGIN = 0.15 * (1 - all-pairs mean).
-const COMPLETE_STRONG = 0.45;
-const COMPLETE_MARGIN = 0.12;
+// We look for a candidate that clearly STANDS OUT: a strong absolute score AND a
+// margin over the pack — not a fixed low threshold (which, with the old high-floor
+// gte-small embeddings, matched everything).
+// MEASURED 2026-07-28 for text-embedding-3-large @1024d (scripts/measure-similarity.mjs
+// over the retrieval set, N=29): STRONG = NN p50 = 0.478; MARGIN = 0.15 * (1 -
+// all-pairs mean 0.232) = 0.115.
+const COMPLETE_STRONG = 0.478;
+const COMPLETE_MARGIN = 0.115;
 
 // Complete a specific item the owner reported as done. Resolves their phrasing to
 // open items semantically. Clear winner -> do it (with Undo); a close cluster ->
