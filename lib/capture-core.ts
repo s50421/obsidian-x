@@ -5,6 +5,8 @@ import { writeVaultNote, vaultUrl } from "@/lib/vault";
 import { logAudit } from "@/lib/audit";
 import { logLlmUsage } from "@/lib/usage";
 import { detectSensitive } from "@/lib/sensitivity";
+import { reprojectItemToVault } from "@/lib/vault-sync";
+import { cleanTitle, CONFIDENCE_BAR, JUNK_ARCHIVE_SCORE, scoreJunk } from "@/lib/title-standard.mjs";
 
 // Similarity thresholds (cosine, 0..1) against `items.embedding_v2`
 // (text-embedding-3-large @ 1024 dims via match_neighbors_v2).
@@ -32,7 +34,14 @@ import { detectSensitive } from "@/lib/sensitivity";
 // block with the measured basis.
 const LINK_THRESHOLD = 0.5; // clearly related -> auto-link
 const DUP_THRESHOLD = 0.85; // near-identical -> flag as a merge candidate
-const LOW_CONFIDENCE = 0.55; // LLM confidence, not similarity — unchanged
+// LLM confidence, not similarity — value unchanged (0.55), now shared with the
+// enrich/re-process paths via lib/title-standard.mjs so the no-half-baked bar is
+// one number across the whole system.
+const LOW_CONFIDENCE = CONFIDENCE_BAR;
+
+// A split capture cross-links its parts. Cap the array so a 12-topic braindump
+// cannot write a pathological links[] row.
+const MAX_LINKS = 12;
 
 type Neighbor = {
   id: string;
@@ -77,6 +86,10 @@ type StoreOpts = {
   // Override the text used for the embedding (defaults to title + body). Document
   // ingest embeds on a concise summary rather than a long, truncated body.
   embedText?: string;
+  // v4.0 W2 — sibling parts of the SAME split capture. They are excluded from
+  // the duplicate check (a braindump's own topics must never duplicate-flag each
+  // other) and force-linked afterwards. Does not touch the W1 thresholds.
+  siblingIds?: string[];
 };
 
 // Store a single enriched item: embed -> neighbor search (auto-link + duplicate
@@ -98,22 +111,35 @@ export async function storeEnrichedItem(
     exclude_id: null,
     match_count: 6,
   });
-  const neighbors = (neigh ?? []) as Neighbor[];
+  const siblingIds = new Set(opts.siblingIds ?? []);
+  const neighbors = ((neigh ?? []) as Neighbor[]).filter((n) => !siblingIds.has(n.id));
   const dup = neighbors.find((n) => n.similarity >= DUP_THRESHOLD) ?? null;
   const links = neighbors
     .filter((n) => n.similarity >= LINK_THRESHOLD && (!dup || n.id !== dup.id))
     .slice(0, 5);
 
-  const lowConfidence = confidence < LOW_CONFIDENCE;
-  const needsReview = lowConfidence || !!dup;
+  // Per-item verdict from enrich (title quality / this part's own confidence)
+  // takes precedence over the capture-wide number; fall back to the old
+  // behaviour when the item carries none.
+  const itemConfidence = typeof it.confidence === "number" ? it.confidence : confidence;
+  const lowConfidence = itemConfidence < LOW_CONFIDENCE;
+  const needsReview = lowConfidence || !!dup || it.needs_review === true;
   const reviewReason = dup
     ? `possible duplicate of "${dup.title}"`
-    : lowConfidence
-      ? "low confidence — please confirm"
-      : null;
+    : (it.review_reason ??
+      (lowConfidence ? "low confidence — please confirm" : null));
 
   const createdAt = new Date().toISOString();
   const dueAt = it.due_date ? new Date(`${it.due_date}T09:00:00Z`).toISOString() : null;
+
+  // v4.0 W2 — junk pass at ruthlessness 8/10. A confident 8+ lands ARCHIVED and
+  // tagged 'junk' (so it never reaches the daily deck or the brief) with a
+  // `junk_archived` audit entry carrying the score — one UPDATE reverses it.
+  // 5-7, or 8+ with any doubt, stays open and flagged 'possible-junk'.
+  // Nothing is ever deleted.
+  const junked = it.junk_verdict === "archive";
+  const status = junked ? "archived" : "open";
+  const tags = junked ? [...new Set([...it.tags, "junk"])] : it.tags;
 
   const { data: item, error } = await admin
     .from("items")
@@ -123,16 +149,16 @@ export async function storeEnrichedItem(
       title: it.title,
       body: it.body,
       raw: rawText,
-      status: "open",
+      status,
       priority: it.priority,
-      tags: it.tags,
+      tags,
       source,
       sensitive,
       embedding_v2: embedding,
       created_at: createdAt,
       valid_from: createdAt,
       due_at: dueAt,
-      confidence,
+      confidence: itemConfidence,
       needs_review: needsReview,
       review_reason: reviewReason,
       entities: it.entities,
@@ -162,7 +188,7 @@ export async function storeEnrichedItem(
       dueAt,
       entities: it.entities,
       links: links.map((l) => ({ id: l.id, title: l.title })),
-      status: "open",
+      status,
     });
     vault_url = vaultUrl(vault_path);
     await admin.from("items").update({ vault_path }).eq("id", item.id);
@@ -186,6 +212,24 @@ export async function storeEnrichedItem(
     detail: { type: item.type, source, sensitive, needs_review: needsReview, split },
   });
 
+  // Separate, greppable entry for the junk pass — this is the row that makes
+  // auto-archiving reversible and auditable ("show me what it threw away").
+  if (junked) {
+    await logAudit(admin, {
+      user_id: userId,
+      item_id: item.id,
+      action: "junk_archived",
+      actor: "system",
+      detail: {
+        junk_score: it.junk_score ?? null,
+        junk_reason: it.junk_reason ?? null,
+        ruthlessness: JUNK_ARCHIVE_SCORE,
+        previous_status: "open",
+        source,
+      },
+    });
+  }
+
   return {
     item,
     due_at: item.due_at,
@@ -201,6 +245,12 @@ export async function storeEnrichedItem(
 
 // The shared capture pipeline: enrich -> (per item) storeEnrichedItem. Used by the
 // typed capture route, the inbound-email webhook, and the token/shortcut route.
+//
+// v4.0 W2 — LIVE captures (typed / telegram / voice / email) SPLIT DIRECTLY: if
+// the enrich pass reports 2+ distinct topics, each becomes its own item right
+// away, with its own clean title, type, tags and embedding, cross-linked to its
+// siblings. There is deliberately no approval step at capture time — the evening
+// swipe deck is the approval gate, so capture stays zero-decision.
 export async function captureText(
   userId: string,
   text: string,
@@ -213,10 +263,33 @@ export async function captureText(
   let enriched: EnrichedItem[];
   let confidence: number;
   if (sensitive) {
-    // Sensitive: no third-party LLM. Minimal local classification only.
-    const title = cleanText.split("\n")[0].slice(0, 60).trim() || "Private note";
+    // Sensitive: no third-party LLM, so no AI title is possible. Clean the
+    // note's own opening line mechanically and FLAG it — an un-AI-titled item
+    // must not pass as one that met the standard (no-half-baked law).
+    const derived = cleanTitle(cleanText.split("\n")[0]);
+    // The junk pass still runs, but only its deterministic half — a private
+    // note is never shown to a model, so only "there is no language in here"
+    // structural junk can be decided.
+    const junk = scoreJunk({ modelScore: null, title: derived, body: cleanText });
     enriched = [
-      { title, type: "note", body: cleanText, tags: ["private"], priority: "medium", due_date: null, entities: [] },
+      {
+        title: derived || "Private note",
+        type: "note",
+        body: cleanText,
+        tags: ["private"],
+        priority: "medium",
+        due_date: null,
+        entities: [],
+        confidence: 1,
+        needs_review: junk.verdict !== "archive",
+        review_reason:
+          junk.verdict === "archive"
+            ? null
+            : "private note — titled locally, not by the model",
+        junk_score: junk.score,
+        junk_verdict: junk.verdict,
+        junk_reason: junk.structuralReason,
+      },
     ];
     confidence = 1;
   } else {
@@ -230,9 +303,61 @@ export async function captureText(
   const created: CreatedItem[] = [];
   for (const it of enriched) {
     created.push(
-      await storeEnrichedItem(admin, userId, it, { source, rawText: text, sensitive, confidence, split })
+      await storeEnrichedItem(admin, userId, it, {
+        source,
+        rawText: text,
+        sensitive,
+        confidence,
+        split,
+        // Parts already stored from THIS capture: never duplicate-flag a sibling.
+        siblingIds: created.map((c) => c.item.id),
+      })
     );
   }
 
+  if (created.length > 1) await crossLinkSplitParts(admin, userId, created, source, confidence);
+
   return { created, confidence, split: created.length > 1 };
+}
+
+// Wire the parts of one split capture to each other (links[] both ways) and
+// record a single `split_capture` audit entry naming every part, so the split is
+// inspectable and reversible from the audit trail alone.
+async function crossLinkSplitParts(
+  admin: Admin,
+  userId: string,
+  created: CreatedItem[],
+  source: string,
+  confidence: number
+): Promise<void> {
+  const ids = created.map((c) => c.item.id);
+
+  for (const c of created) {
+    const siblings = created.filter((o) => o.item.id !== c.item.id);
+    const merged = [...new Set([...c.links.map((l) => l.id), ...siblings.map((s) => s.item.id)])].slice(
+      0,
+      MAX_LINKS
+    );
+    const { error } = await admin.from("items").update({ links: merged }).eq("id", c.item.id);
+    if (error) continue; // a failed cross-link must not fail the capture
+    c.links = [
+      ...c.links,
+      ...siblings.map((s) => ({ id: s.item.id, title: s.item.title })),
+    ].slice(0, MAX_LINKS);
+    // Keep the vault projection consistent with the new links (best-effort).
+    if (c.vault_path) await reprojectItemToVault(admin, c.item.id);
+  }
+
+  await logAudit(admin, {
+    user_id: userId,
+    item_id: ids[0],
+    action: "split_capture",
+    actor: "system",
+    detail: {
+      source,
+      confidence,
+      parts: ids,
+      titles: created.map((c) => c.item.title),
+    },
+  });
 }

@@ -1,9 +1,34 @@
 import { chat, extractJson, type Usage } from "@/lib/openrouter";
+import {
+  ALLOWED_TYPES,
+  ALLOWED_PRIORITY,
+  ENTITY_KINDS,
+  TITLE_RULES,
+  TITLE_EXAMPLES,
+  TAG_RULES,
+  SPLIT_RULES,
+  JUNK_RULES,
+  CONFIDENCE_RULES,
+  MAX_SPLIT_PARTS,
+  parseEnrichPayload,
+} from "@/lib/title-standard.mjs";
+import type { Entity, JunkVerdict } from "@/lib/title-standard.mjs";
 
-// v1.2 enrichment: one OpenRouter call cleans, (optionally) splits, and
-// classifies a raw capture, resolving due dates and pulling out entities.
+// v4.0 W2 — enrichment: ONE OpenRouter call cleans a raw capture, writes exactly
+// one clean topic-first title per topic, classifies it against the constrained
+// tag taxonomy, resolves due dates, pulls out entities, and detects whether the
+// capture actually holds several distinct topics (multi-topic detection happens
+// in this same pass — no second model call).
+//
+// The title spec, the taxonomy and the mechanical sanitisers live in
+// lib/title-standard.mjs so the live capture path and the corpus re-process
+// (scripts/reprocess-corpus.mjs) cannot drift apart.
+//
+// No-half-baked law: a below-bar confidence, or a title that still breaks the
+// spec after sanitising, sets needs_review on the item instead of quietly
+// surfacing a bad title.
 
-export type Entity = { name: string; kind: "person" | "place" | "org" | "other" };
+export type { Entity };
 
 export type EnrichedItem = {
   title: string;
@@ -13,108 +38,101 @@ export type EnrichedItem = {
   priority: "low" | "medium" | "high";
   due_date: string | null; // "YYYY-MM-DD" or null
   entities: Entity[];
+  // v4.0 W2 — per-item review verdict. On a split, one part can be confident
+  // while another is not, so these are per item rather than per capture.
+  confidence?: number;
+  needs_review?: boolean;
+  review_reason?: string | null;
+  // v4.0 W2 — junk pass (ruthlessness 8/10). 'archive' means the item is stored
+  // archived + tagged 'junk' (reversible, audited); 'review' keeps it and flags
+  // it; 'keep' says nothing. See scoreJunk() in lib/title-standard.mjs.
+  junk_score?: number;
+  junk_verdict?: JunkVerdict;
+  junk_reason?: string | null;
 };
 
-export type EnrichResult = { items: EnrichedItem[]; confidence: number; usage: Usage };
-
-// Must match the items_* check constraints in the database.
-const ALLOWED_TYPES = ["note", "task", "idea", "shopping", "reference", "person", "event"];
-const ALLOWED_PRIORITY = ["low", "medium", "high"];
-const ENTITY_KINDS = ["person", "place", "org", "other"];
-
-type RawItem = {
-  title?: unknown;
-  type?: unknown;
-  body?: unknown;
-  tags?: unknown;
-  priority?: unknown;
-  due_date?: unknown;
-  entities?: unknown;
+export type EnrichResult = {
+  items: EnrichedItem[];
+  confidence: number;
+  usage: Usage;
+  split: boolean;
 };
+
+export function buildEnrichSystemPrompt(todayISO: string): string {
+  return [
+    `You process a raw captured note for a personal knowledge base. Today is ${todayISO}.`,
+    `The owner never organises anything by hand: your output IS the filing.`,
+    ``,
+    `Return ONLY a JSON object of this shape:`,
+    `{`,
+    `  "confidence": number 0..1 — your certainty in the whole reading,`,
+    `  "items": [ {`,
+    `     "title": the topic-first title (see TITLE RULES),`,
+    `     "type": one of ${JSON.stringify(ALLOWED_TYPES)},`,
+    `     "body": this topic's content, cleaned — fix grammar and typos, drop`,
+    `             filler, keep every fact, invent nothing,`,
+    `     "tags": array of tags (see TAG RULES),`,
+    `     "priority": one of ${JSON.stringify(ALLOWED_PRIORITY)},`,
+    `     "due_date": "YYYY-MM-DD" if a deadline is implied (resolve relative`,
+    `                 dates against today), else null,`,
+    `     "entities": [ {"name": string, "kind": one of ${JSON.stringify(ENTITY_KINDS)}} ],`,
+    `     "junk_score": integer 0..10 for THIS item (see JUNK SCORE),`,
+    `     "confidence": number 0..1 for THIS item specifically`,
+    `  } ]`,
+    `}`,
+    ``,
+    `"items" holds ONE entry for a single-topic note and one entry per topic for a`,
+    `multi-topic one — never more than ${MAX_SPLIT_PARTS}.`,
+    ``,
+    TITLE_RULES,
+    ``,
+    TITLE_EXAMPLES,
+    ``,
+    TAG_RULES,
+    ``,
+    SPLIT_RULES,
+    ``,
+    JUNK_RULES,
+    ``,
+    CONFIDENCE_RULES,
+  ].join("\n");
+}
 
 export async function enrich(text: string, todayISO: string): Promise<EnrichResult> {
   const model = process.env.OPENROUTER_CLASSIFY_MODEL!;
-  const system =
-    `You process a raw captured note for a personal knowledge base. Today is ${todayISO}.\n` +
-    `Return ONLY a JSON object of this shape:\n` +
-    `{\n` +
-    `  "confidence": number between 0 and 1 (your certainty in this classification),\n` +
-    `  "items": [ {\n` +
-    `     "title": concise 3-8 word title,\n` +
-    `     "type": one of ${JSON.stringify(ALLOWED_TYPES)},\n` +
-    `     "body": the note cleaned up — fix grammar/typos, drop filler, keep every fact, invent nothing,\n` +
-    `     "tags": 1-5 lowercase kebab-case tags,\n` +
-    `     "priority": one of ${JSON.stringify(ALLOWED_PRIORITY)},\n` +
-    `     "due_date": ISO "YYYY-MM-DD" if a deadline is implied (resolve relative dates against today), else null,\n` +
-    `     "entities": [ {"name": string, "kind": one of ${JSON.stringify(ENTITY_KINDS)}} ]\n` +
-    `  } ]\n` +
-    `}\n` +
-    `Split into MULTIPLE items ONLY if the note clearly holds separate, unrelated thoughts; otherwise return exactly one item.`;
 
   const { content: rawText, usage } = await chat(
     model,
     [
-      { role: "system", content: system },
+      { role: "system", content: buildEnrichSystemPrompt(todayISO) },
       { role: "user", content: text },
     ],
     { json: true, temperature: 0 }
   );
 
-  const parsed = extractJson<{ confidence?: unknown; items?: unknown }>(rawText);
-
-  const confidence = clamp01(Number(parsed?.confidence));
-  const rawItems: RawItem[] =
-    Array.isArray(parsed?.items) && parsed.items.length
-      ? (parsed.items as RawItem[])
-      : [parsed as RawItem];
-
-  const items = rawItems.map((it) => sanitizeItem(it, text));
-  return {
-    items: items.length ? items : [sanitizeItem({}, text)],
-    confidence: Number.isFinite(confidence) ? confidence : 0.6,
-    usage,
-  };
+  return { ...parseEnrichReply(rawText, text), usage };
 }
 
-function str(v: unknown): string {
-  return typeof v === "string" ? v.trim() : "";
-}
-
-function sanitizeItem(it: RawItem, fallbackText: string): EnrichedItem {
-  const type = ALLOWED_TYPES.includes(String(it?.type)) ? String(it.type) : "note";
-  const body = str(it?.body) || fallbackText.trim();
-  const title = str(it?.title) || body.split("\n")[0].slice(0, 60) || "Untitled";
-  const tags = Array.isArray(it?.tags)
-    ? it.tags.map((t) => String(t).toLowerCase().trim()).filter(Boolean).slice(0, 5)
-    : [];
-  const priority = (
-    ALLOWED_PRIORITY.includes(String(it?.priority)) ? String(it.priority) : "medium"
-  ) as EnrichedItem["priority"];
-  const due_date = isValidISODate(it?.due_date) ? String(it.due_date) : null;
-  const entities: Entity[] = Array.isArray(it?.entities)
-    ? it.entities
-        .map((e): Entity => {
-          const rec = (e ?? {}) as { name?: unknown; kind?: unknown };
-          const kind = ENTITY_KINDS.includes(String(rec.kind))
-            ? (String(rec.kind) as Entity["kind"])
-            : "other";
-          return { name: String(rec.name ?? "").trim(), kind };
-        })
-        .filter((e) => e.name)
-        .slice(0, 12)
-    : [];
-
-  return { title, type, body, tags, priority, due_date, entities };
-}
-
-function clamp01(n: number): number {
-  if (!Number.isFinite(n)) return NaN;
-  return Math.min(1, Math.max(0, n));
-}
-
-function isValidISODate(v: unknown): boolean {
-  if (typeof v !== "string") return false;
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return false;
-  const d = new Date(v + "T00:00:00Z");
-  return !Number.isNaN(d.getTime());
+/**
+ * Parse + sanitise a model reply into enriched items.
+ *
+ * The JSON is extracted here; the whole reply -> item-fields mapping lives in
+ * parseEnrichPayload() in lib/title-standard.mjs, which is pure ESM and is
+ * unit-tested against fabricated model output by scripts/test-retitle-core.mjs.
+ *
+ * NEVER throws. A malformed reply degrades to a single low-confidence item
+ * carrying the original text and flagged for review — a capture is never lost
+ * and the route never 500s.
+ */
+export function parseEnrichReply(
+  rawText: string,
+  originalText: string
+): Omit<EnrichResult, "usage"> {
+  let parsed: unknown = null;
+  try {
+    parsed = extractJson<unknown>(rawText);
+  } catch {
+    parsed = null;
+  }
+  return parseEnrichPayload(parsed, originalText) as Omit<EnrichResult, "usage">;
 }
