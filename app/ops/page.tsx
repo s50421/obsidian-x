@@ -3,11 +3,36 @@ import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { isOwner } from "@/lib/owner";
 import AppNav from "../components/AppNav";
-import { SectionLabel, TYPE_HUE, TYPE_SOLID } from "../components/ui";
+import {
+  BTN_SECONDARY,
+  CARD,
+  CARD_LIST,
+  EmptyState,
+  PageHeader,
+  PageMain,
+  SectionLabel,
+  TYPE_HUE,
+  TYPE_SOLID,
+} from "../components/ui";
 
 export const dynamic = "force-dynamic";
 
-type Item = { source: string; status: string; needs_review: boolean; sensitive: boolean; type: string };
+// v4.0 W6 — Ops is the coverage/insight surface: what the brain holds, where it
+// came from, what it cost, what just happened. Read-only and one round of
+// queries, so it stays fast enough to open casually.
+//
+// The Sources card is the seed of the v4.1 inflow monitor: every capture source
+// with its all-time count and how much of it arrived in the last 24h. Today it
+// reports what *did* arrive; v4.1 turns that into what *should* have arrived.
+
+type Item = {
+  source: string;
+  status: string;
+  needs_review: boolean;
+  sensitive: boolean;
+  type: string;
+  created_at: string;
+};
 type UsageRow = {
   operation: string;
   cost_usd: number | null;
@@ -25,6 +50,13 @@ function money(n: number): string {
   return "$" + n.toFixed(4);
 }
 
+// Wrapped rather than inlined into the component body: this page is a server
+// component that re-runs per request, but the react-hooks purity rule (rightly)
+// objects to Date.now() sitting in a render body.
+function last24hCutoff(): number {
+  return Date.now() - 24 * 3600 * 1000;
+}
+
 function ago(iso: string): string {
   const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
   if (s < 60) return `${Math.floor(s)}s`;
@@ -34,6 +66,28 @@ function ago(iso: string): string {
 }
 
 const TYPE_ORDER = ["note", "task", "idea", "shopping", "reference", "person", "event"];
+
+// Friendly names for the sources the pipeline writes. Anything unknown falls
+// through as its raw slug rather than being hidden — an unnamed source is still
+// a source, and silently dropping one would break the coverage story.
+const SOURCE_LABEL: Record<string, string> = {
+  web: "Web capture",
+  telegram: "Telegram",
+  email: "Email",
+  voice: "Voice note",
+  upload: "File upload",
+  share: "Share sheet",
+  shortcut: "iOS Shortcut",
+  "apple-notes": "Apple Notes import",
+  "chatgpt-profile": "ChatGPT profile",
+  system: "System",
+};
+
+// Humanises the audit action slugs (review_approve → Review approve).
+function actionLabel(a: string): string {
+  const s = a.replace(/[_.]/g, " ");
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
 
 export default async function OpsPage() {
   const supabase = await createClient();
@@ -46,7 +100,7 @@ export default async function OpsPage() {
   const uid = user.id;
 
   const [itemsRes, usageRes, auditRes] = await Promise.all([
-    admin.from("items").select("source,status,needs_review,sensitive,type").eq("user_id", uid),
+    admin.from("items").select("source,status,needs_review,sensitive,type,created_at").eq("user_id", uid),
     admin.from("llm_usage").select("operation,cost_usd,total_tokens,created_at").eq("user_id", uid),
     admin
       .from("audit")
@@ -68,6 +122,22 @@ export default async function OpsPage() {
   );
   const maxType = Math.max(1, ...byType.map((r) => r.n));
 
+  // Sources — all-time inflow per capture source, plus the trailing 24h.
+  const dayAgo = last24hCutoff();
+  const sourceMap = new Map<string, { total: number; recent: number }>();
+  for (const i of items) {
+    const key = i.source || "unknown";
+    const row = sourceMap.get(key) ?? { total: 0, recent: 0 };
+    row.total += 1;
+    if (new Date(i.created_at).getTime() >= dayAgo) row.recent += 1;
+    sourceMap.set(key, row);
+  }
+  const sources = [...sourceMap.entries()]
+    .map(([source, v]) => ({ source, ...v }))
+    .sort((a, b) => b.total - a.total);
+  const maxSource = Math.max(1, ...sources.map((s) => s.total));
+  const recent24h = sources.reduce((a, s) => a + s.recent, 0);
+
   const startToday = new Date();
   startToday.setHours(0, 0, 0, 0);
   const sum = (rows: UsageRow[], f: (r: UsageRow) => number) => rows.reduce((a, r) => a + f(r), 0);
@@ -80,37 +150,81 @@ export default async function OpsPage() {
   return (
     <>
       <AppNav />
-      <main className="mx-auto w-full max-w-4xl flex-1 px-4 pb-28 pt-3 md:px-8 md:pb-12 md:pt-8">
-        <div className="mb-5 flex items-end justify-between md:mb-6">
-          <div>
-            <h1 className="text-[28px] font-bold tracking-[-0.022em] md:text-[22px]">Ops</h1>
-            <p className="mt-0.5 text-[13px] text-ink-2">Read-only</p>
-          </div>
-          <a
-            href="/api/export"
-            download
-            className="rounded-control bg-white/[0.08] px-4 py-2 text-[13px] font-semibold text-ink transition hover:bg-white/[0.12]"
-          >
-            ⭳ Export brain
-          </a>
-        </div>
+      <PageMain>
+        <PageHeader
+          title="Ops"
+          subtitle="Read-only. What the brain holds, and what it cost."
+          action={
+            <a href="/api/export" download className={`${BTN_SECONDARY} px-4 text-[13px]`}>
+              ⭳ Export brain
+            </a>
+          }
+        />
 
         <div className="mb-4 grid grid-cols-2 gap-2.5 md:grid-cols-4">
           <Stat value={active.length.toLocaleString()} label="items active" />
           <Stat value={openTasks.toLocaleString()} label="open tasks" />
+          <Stat value={recent24h.toLocaleString()} label="new · last 24h" />
           <Stat value={money(sum(usage, cost))} label="LLM spend · all-time" />
-          <Stat value={usage.length.toLocaleString()} label="LLM calls" />
         </div>
 
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-          <div className="flex flex-col gap-3 rounded-card border border-hairline bg-surface-1 p-5">
+          {/* Coverage — where everything came from. */}
+          <div className={`flex flex-col gap-3 p-5 md:col-span-2 ${CARD}`}>
+            <div className="flex items-baseline justify-between gap-3">
+              <SectionLabel>Sources</SectionLabel>
+              <span className="text-xs text-ink-3">
+                {sources.length} {sources.length === 1 ? "source" : "sources"} · {items.length.toLocaleString()} items
+                all-time
+              </span>
+            </div>
+            {sources.length === 0 ? (
+              <EmptyState
+                bordered={false}
+                glyph="⇣"
+                title="Nothing has flowed in yet"
+                body="Every capture — web, Telegram, email, voice, imports — will be counted here."
+              />
+            ) : (
+              <div className="grid grid-cols-1 gap-x-8 gap-y-2.5 md:grid-cols-2">
+                {sources.map((s) => (
+                  <div key={s.source} className="flex items-center gap-2.5">
+                    <span className="w-24 shrink-0 truncate text-[13px] text-ink" title={s.source}>
+                      {SOURCE_LABEL[s.source] ?? s.source}
+                    </span>
+                    <div className="h-2 min-w-8 flex-1 overflow-hidden rounded-full bg-white/[0.05]">
+                      <div
+                        className="h-full rounded-full bg-accent"
+                        style={{ width: `${(s.total / maxSource) * 100}%` }}
+                      />
+                    </div>
+                    <span className="w-[72px] shrink-0 text-right text-[13px] tabular-nums text-ink-2">
+                      {s.total.toLocaleString()}
+                      {s.recent > 0 && <span className="ml-1 text-xs text-accent-text">+{s.recent}</span>}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+            <p className="text-xs leading-relaxed text-ink-3">
+              Counts are what actually arrived, all-time; the blue figure is the last 24 hours. Declared-vs-actual
+              coverage lands with the inflow monitor in v4.1.
+            </p>
+          </div>
+
+          <div className={`flex flex-col gap-3 p-5 ${CARD}`}>
             <SectionLabel>By type</SectionLabel>
             {byType.length === 0 ? (
-              <p className="text-sm text-ink-2">No active items yet.</p>
+              <EmptyState
+                bordered={false}
+                glyph="◇"
+                title="No active items yet"
+                body="Capture something, or activate an import, and the mix shows up here."
+              />
             ) : (
               byType.map((r) => (
                 <div key={r.type} className="flex items-center gap-2.5">
-                  <span className="w-16 text-[13px]" style={{ color: TYPE_HUE[r.type] }}>
+                  <span className="w-20 shrink-0 text-[13px]" style={{ color: TYPE_HUE[r.type] }}>
                     {r.type}
                   </span>
                   <div className="h-2 flex-1 overflow-hidden rounded-full bg-white/[0.05]">
@@ -119,60 +233,69 @@ export default async function OpsPage() {
                       style={{ width: `${(r.n / maxType) * 100}%`, background: TYPE_SOLID[r.type] }}
                     />
                   </div>
-                  <span className="w-10 text-right text-[13px] text-ink-2">{r.n}</span>
+                  <span className="w-10 shrink-0 text-right text-[13px] tabular-nums text-ink-2">{r.n}</span>
                 </div>
               ))
             )}
           </div>
 
-          <div className="overflow-hidden rounded-card border border-hairline bg-surface-1">
+          <div className={CARD_LIST}>
             <div className="px-5 pb-2.5 pt-5">
               <SectionLabel>Recent activity</SectionLabel>
             </div>
             {audit.length === 0 ? (
-              <p className="px-5 pb-5 text-sm text-ink-2">No activity logged yet.</p>
+              <div className="px-5 pb-5">
+                <EmptyState
+                  bordered={false}
+                  glyph="◷"
+                  title="Nothing logged yet"
+                  body="Captures, merges, approvals and syncs all leave a trail here."
+                />
+              </div>
             ) : (
               audit.map((a, i) => (
                 <div key={i} className={`flex items-center gap-2.5 px-5 py-3 ${i > 0 ? "border-t border-hairline" : ""}`}>
                   <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: "#96b2ff" }} />
-                  <div className="flex-1 truncate text-[13px]">
-                    <span className="font-medium">{a.action}</span>{" "}
+                  <div className="min-w-0 flex-1 truncate text-[13px]">
+                    <span className="font-medium">{actionLabel(a.action)}</span>{" "}
                     <span className="text-ink-3">· {a.actor}</span>
                   </div>
-                  <span className="text-xs text-ink-3">{ago(a.created_at)}</span>
+                  <span className="shrink-0 text-xs tabular-nums text-ink-3">{ago(a.created_at)}</span>
                 </div>
               ))
             )}
           </div>
         </div>
 
-        <div className="mt-4 rounded-card border border-hairline bg-surface-1 p-5">
-          <SectionLabel className="mb-2.5">Spend detail</SectionLabel>
-          <div className="grid grid-cols-2 gap-2.5 text-[13px] md:grid-cols-4">
+        <div className={`mt-4 p-5 ${CARD}`}>
+          <SectionLabel className="mb-3">Spend detail</SectionLabel>
+          <div className="grid grid-cols-2 gap-4 md:grid-cols-5">
             <MiniStat value={money(sum(today, cost))} label="today" />
             <MiniStat value={sum(today, toks).toLocaleString()} label="today tokens" />
+            <MiniStat value={usage.length.toLocaleString()} label="LLM calls" />
             <MiniStat value={active.filter((i) => i.needs_review).length.toString()} label="needs review" />
             <MiniStat value={active.filter((i) => i.sensitive).length.toString()} label="private" />
           </div>
           {Object.keys(byOp).length > 0 && (
-            <p className="mt-3 text-xs text-ink-3">
-              by operation:{" "}
+            <p className="mt-4 border-t border-hairline pt-3 text-xs leading-relaxed text-ink-3">
+              By operation:{" "}
               {Object.entries(byOp)
+                .sort((a, b) => b[1] - a[1])
                 .map(([op, c]) => `${op} ${money(c)}`)
                 .join(" · ")}
             </p>
           )}
         </div>
-      </main>
+      </PageMain>
     </>
   );
 }
 
 function Stat({ label, value }: { label: string; value: string | number }) {
   return (
-    <div className="rounded-card border border-hairline bg-surface-1 p-4">
-      <div className="text-[26px] font-bold tracking-[-0.02em] tabular-nums">{value}</div>
-      <div className="mt-0.5 text-[13px] text-ink-2">{label}</div>
+    <div className={`p-4 ${CARD}`}>
+      <div className="text-[26px] font-bold leading-none tracking-[-0.02em] tabular-nums">{value}</div>
+      <div className="mt-1.5 text-[13px] text-ink-2">{label}</div>
     </div>
   );
 }
@@ -181,7 +304,7 @@ function MiniStat({ label, value }: { label: string; value: string }) {
   return (
     <div>
       <div className="text-[17px] font-semibold tabular-nums">{value}</div>
-      <div className="text-xs text-ink-3">{label}</div>
+      <div className="mt-0.5 text-xs text-ink-3">{label}</div>
     </div>
   );
 }

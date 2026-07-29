@@ -42,8 +42,8 @@ export default function LoginForm({ initialError }: { initialError?: string }) {
 
   if (status === "sent") {
     return (
-      <div className="w-full rounded-control border border-hairline bg-surface-2 p-4 text-left text-sm text-ink-2">
-        Check your email — I sent a sign-in link to{" "}
+      <div className="w-full rounded-control border border-hairline bg-surface-2 p-4 text-left text-[13px] leading-relaxed text-ink-2">
+        Check your email — a sign-in link is on its way to{" "}
         <span className="font-semibold text-ink">{email}</span>. Open it on this device.
       </div>
     );
@@ -58,16 +58,17 @@ export default function LoginForm({ initialError }: { initialError?: string }) {
         value={email}
         onChange={(e) => setEmail(e.target.value)}
         placeholder="you@email.com"
+        aria-label="Email address"
         className="h-[50px] w-full rounded-control border border-hairline bg-surface-2 px-4 text-[16px] text-ink outline-none transition placeholder:text-ink-3 focus:border-accent focus:shadow-[0_0_0_3px_rgba(80,107,242,0.25)]"
       />
       <button
         type="submit"
-        disabled={status === "sending"}
-        className="h-[50px] w-full rounded-control bg-accent text-[16px] font-semibold text-white transition disabled:opacity-50"
+        disabled={status === "sending" || !email.trim()}
+        className="h-[50px] w-full rounded-control bg-accent text-[16px] font-semibold text-white transition active:scale-[0.98] disabled:pointer-events-none disabled:opacity-50"
       >
         {status === "sending" ? "Sending…" : "Send magic link"}
       </button>
-      {message && <p className="text-sm text-danger">{message}</p>}
+      {message && <p className="text-[13px] text-danger">{message}</p>}
     </form>
   );
 }

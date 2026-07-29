@@ -3,7 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { isOwner } from "@/lib/owner";
 import AppNav from "../components/AppNav";
-import { SectionLabel, TypeChip } from "../components/ui";
+import { CARD, CARD_LIST, EmptyState, PageHeader, PageMain, SectionLabel, TypeChip } from "../components/ui";
 import ApprovalButtons from "./ApprovalButtons";
 
 export const dynamic = "force-dynamic";
@@ -49,32 +49,32 @@ export default async function ApprovalsPage() {
   return (
     <>
       <AppNav />
-      <main className="mx-auto w-full max-w-4xl flex-1 px-4 pb-28 pt-3 md:px-8 md:pb-12 md:pt-8">
-        <div className="mb-5 md:hidden">
-          <h1 className="text-[28px] font-bold tracking-[-0.022em]">Approvals</h1>
-          <p className="mt-0.5 text-[13px] text-ink-2">{pending.length} proposed tasks waiting</p>
-        </div>
+      <PageMain>
+        <PageHeader
+          title="Approvals"
+          subtitle={
+            pending.length === 0
+              ? "Nothing proposed is waiting on you."
+              : `${pending.length} proposed ${pending.length === 1 ? "task is" : "tasks are"} waiting on you.`
+          }
+        />
 
         <div className="grid grid-cols-1 gap-7 md:grid-cols-[1fr_340px] md:items-start">
           <section className="flex flex-col gap-3">
             <SectionLabel className="px-1">Pending</SectionLabel>
             {pending.length === 0 ? (
-              <div className="flex flex-col items-center gap-1.5 rounded-card border border-dashed border-hairline-2 p-7 text-center">
-                <div className="flex h-9 w-9 items-center justify-center rounded-control bg-white/[0.06] text-ink-3">✓</div>
-                <div className="text-[15px] font-semibold">Nothing waiting on you</div>
-                <div className="text-[13px] text-ink-2">Proposed tasks will land here.</div>
-              </div>
+              <EmptyState
+                title="Nothing waiting on you"
+                body="When the brain proposes a task — from a capture, a brief, or an interview answer — it lands here for one tap."
+              />
             ) : (
               pending.map((p) => (
-                <div
-                  key={p.id}
-                  className="flex flex-col gap-3 rounded-card border border-hairline bg-surface-1 p-4 md:flex-row md:items-center md:gap-5"
-                >
+                <div key={p.id} className={`flex flex-col gap-3.5 p-4 md:flex-row md:items-center md:gap-5 ${CARD}`}>
                   <div className="flex min-w-0 flex-1 flex-col gap-2">
                     <TypeChip type="task" />
                     <div className="text-[16px] font-semibold leading-snug">{p.title ?? "(untitled)"}</div>
                     <div className="text-[13px] text-ink-2">
-                      {p.kind} · from {p.source ?? "?"} · {ago(p.created_at)}
+                      {p.kind} · from {p.source ?? "unknown"} · {ago(p.created_at)}
                     </div>
                   </div>
                   <ApprovalButtons id={p.id} />
@@ -86,19 +86,23 @@ export default async function ApprovalsPage() {
           <section className="flex flex-col gap-3">
             <SectionLabel className="px-1">History</SectionLabel>
             {decided.length === 0 ? (
-              <p className="px-1 text-sm text-ink-2">No decisions yet.</p>
+              <EmptyState
+                glyph="◷"
+                title="No decisions yet"
+                body="Everything you approve or reject stays here, with a link out to whatever it created."
+              />
             ) : (
-              <div className="overflow-hidden rounded-card border border-hairline bg-surface-1">
+              <div className={CARD_LIST}>
                 {decided.map((p, idx) => (
                   <div
                     key={p.id}
-                    className={`flex items-center gap-2.5 p-4 ${idx > 0 ? "border-t border-hairline" : ""}`}
+                    className={`flex min-h-11 items-center gap-2.5 px-4 py-3 ${idx > 0 ? "border-t border-hairline" : ""}`}
                   >
                     <span
                       className="h-1.5 w-1.5 shrink-0 rounded-full"
                       style={{ background: p.status === "approved" ? "#93d8a8" : "rgba(255,255,255,0.3)" }}
                     />
-                    <div className="min-w-0 flex-1 truncate text-sm">
+                    <div className="min-w-0 flex-1 truncate text-[13px]">
                       {p.result?.url ? (
                         <a href={p.result.url} target="_blank" rel="noreferrer" className="font-medium text-ink hover:text-accent-text">
                           {p.title ?? "(untitled)"}
@@ -112,7 +116,13 @@ export default async function ApprovalsPage() {
                       </span>
                     </div>
                     {p.result?.url && (
-                      <a href={p.result.url} target="_blank" rel="noreferrer" className="text-[13px] font-semibold text-accent-text">
+                      <a
+                        href={p.result.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        aria-label="Open in ClickUp"
+                        className="-mr-1.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-[13px] font-semibold text-accent-text transition hover:bg-white/[0.06]"
+                      >
                         ↗
                       </a>
                     )}
@@ -122,7 +132,7 @@ export default async function ApprovalsPage() {
             )}
           </section>
         </div>
-      </main>
+      </PageMain>
     </>
   );
 }

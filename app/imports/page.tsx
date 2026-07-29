@@ -1,7 +1,9 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { isOwner } from "@/lib/owner";
+import Link from "next/link";
 import AppNav from "../components/AppNav";
+import { PageHeader, PageMain } from "../components/ui";
 import ImportsReview from "./ImportsReview";
 
 export const dynamic = "force-dynamic";
@@ -16,16 +18,21 @@ export default async function ImportsPage() {
   return (
     <>
       <AppNav />
-      <main className="mx-auto w-full max-w-4xl flex-1 px-4 pb-28 pt-3 md:px-8 md:pb-12 md:pt-8">
-        <div className="mb-4 md:mb-6">
-          <h1 className="text-[28px] font-bold tracking-[-0.022em] md:text-[22px]">Imports</h1>
-          <p className="mt-1 text-[13px] leading-relaxed text-ink-2">
-            Your imports are on hold. Pick a source, then choose what&apos;s worth keeping —{" "}
-            <b className="text-ink">Activate</b> makes items searchable; <b className="text-ink">Remove</b> deletes them for good.
-          </p>
-        </div>
+      <PageMain>
+        <PageHeader
+          title="Imports"
+          subtitle="Bulk triage for the archived backlog — Activate makes items searchable, Remove deletes them for good."
+        />
+        <p className="mb-4 rounded-control border border-hairline bg-surface-1 px-4 py-3 text-[13px] leading-relaxed text-ink-2">
+          The{" "}
+          <Link href="/deck?mode=import" className="font-semibold text-accent-text">
+            Deck
+          </Link>{" "}
+          is the better way through this backlog now — one item at a time, with the AI&apos;s proposed title and the
+          original memory side by side. This screen stays for bulk sweeps.
+        </p>
         <ImportsReview />
-      </main>
+      </PageMain>
     </>
   );
 }

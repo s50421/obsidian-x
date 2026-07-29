@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { enqueue, queueSize, flushQueue } from "@/lib/offline-queue";
-import { SectionLabel, TypeChip, PriorityChip } from "./ui";
+import { BTN_PRIMARY, CARD, Pill, SectionLabel, TypeChip, PriorityChip } from "./ui";
 import { downscaleImage, isImageFile } from "./downscaleImage";
 
 function pickMimeType(): string | undefined {
@@ -64,11 +64,25 @@ function formatDue(iso: string): string {
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-function NeutralChip({ children }: { children: React.ReactNode }) {
+// Secondary affordances next to Save — same height and weight as the primary
+// button, so the row reads as one control group rather than three widgets.
+const AFFORDANCE =
+  "inline-flex h-11 items-center justify-center gap-2 rounded-control text-[15px] font-semibold transition active:scale-[0.98] disabled:pointer-events-none disabled:opacity-40";
+
+function MicIcon() {
   return (
-    <span className="inline-flex items-center rounded-full bg-white/[0.06] px-2.5 py-0.5 text-xs font-semibold text-ink-2">
-      {children}
-    </span>
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden>
+      <rect x="9" y="3" width="6" height="10.5" rx="3" />
+      <path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3" />
+    </svg>
+  );
+}
+
+function ClipIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M20 11.5 12.2 19.3a4.6 4.6 0 0 1-6.5-6.5l7.8-7.8a3 3 0 0 1 4.3 4.3l-7.8 7.8a1.5 1.5 0 0 1-2.1-2.1l7.2-7.2" />
+    </svg>
   );
 }
 
@@ -252,31 +266,38 @@ export default function Capture() {
         )}
       </div>
 
-      <div className="flex flex-col gap-3 rounded-card border border-hairline bg-surface-1 p-4">
+      {/* The hero. The whole card lights its border when the field has focus, so
+          the capture box reads as one target rather than a box inside a box. */}
+      <div
+        className={`flex flex-col gap-3.5 p-4 transition ${CARD} focus-within:border-accent/60 focus-within:shadow-[0_0_0_3px_rgba(80,107,242,0.18)]`}
+      >
         <textarea
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
             if ((e.metaKey || e.ctrlKey) && e.key === "Enter") save();
           }}
-          placeholder="Jot anything — a task, an idea, a name…  (⌘/Ctrl + Enter)"
+          placeholder="Jot anything — a task, an idea, a name…"
           rows={3}
-          className="min-h-16 w-full resize-y bg-transparent text-[16px] leading-relaxed text-ink outline-none placeholder:text-ink-3"
+          aria-label="Capture a thought"
+          className="min-h-20 w-full resize-y bg-transparent text-[16px] leading-relaxed text-ink outline-none placeholder:text-ink-3"
         />
-        <div className="flex gap-2.5 md:justify-end">
+        <div className="flex gap-2.5">
           <button
             onClick={save}
             disabled={saving || uploading || !text.trim()}
-            className="h-11 flex-1 rounded-control bg-accent text-[15px] font-semibold text-white transition disabled:opacity-40 md:flex-none md:px-7"
+            title="Save (⌘/Ctrl + Enter)"
+            className={`${BTN_PRIMARY} flex-1 md:flex-none md:px-8`}
           >
             {saving ? "Saving…" : "Save"}
           </button>
           <button
             onClick={recording ? stopRecording : startRecording}
             disabled={saving || transcribing || uploading}
-            className={`flex h-11 flex-1 items-center justify-center gap-2 rounded-control text-[15px] font-semibold transition disabled:opacity-40 md:flex-none md:px-5 ${
-              recording ? "bg-accent-soft text-accent-text" : "bg-white/[0.08] text-ink"
+            className={`${AFFORDANCE} flex-1 px-4 md:flex-none md:px-5 ${
+              recording ? "bg-accent-soft text-accent-text" : "bg-white/[0.08] text-ink hover:bg-white/[0.12]"
             }`}
+            aria-label={recording ? "Stop recording" : "Record a voice note"}
             title="Record a voice note"
           >
             {recording ? (
@@ -288,9 +309,15 @@ export default function Capture() {
                 Stop
               </>
             ) : transcribing ? (
-              "Transcribing…"
+              <>
+                <span className="h-2 w-2 rounded-full bg-accent-text" style={{ animation: "obx-pulse 1.1s infinite" }} />
+                Transcribing…
+              </>
             ) : (
-              "🎤 Speak"
+              <>
+                <MicIcon />
+                Speak
+              </>
             )}
           </button>
           <input
@@ -303,16 +330,22 @@ export default function Capture() {
           <button
             onClick={() => fileRef.current?.click()}
             disabled={saving || transcribing || uploading}
-            className="flex h-11 items-center justify-center rounded-control bg-white/[0.08] px-4 text-[15px] font-semibold text-ink transition disabled:opacity-40"
+            className={`${AFFORDANCE} w-11 shrink-0 bg-white/[0.08] text-ink hover:bg-white/[0.12]`}
+            aria-label="Attach a document or screenshot"
             title="Upload a document or screenshot (PDF, DOCX, text, image)"
           >
-            {uploading ? "…" : "📎"}
+            {uploading ? (
+              <span className="h-2 w-2 rounded-full bg-accent-text" style={{ animation: "obx-pulse 1.1s infinite" }} />
+            ) : (
+              <ClipIcon />
+            )}
           </button>
         </div>
+        <p className="hidden text-xs text-ink-3 md:block">⌘ + Enter to save · voice and files go through the same pipeline</p>
       </div>
 
       {(error || notice) && (
-        <p className={`mt-2 px-1 text-sm ${error ? "text-danger" : "text-ink-2"}`}>{error ?? notice}</p>
+        <p className={`mt-2.5 px-1 text-[13px] ${error ? "text-danger" : "text-ink-2"}`}>{error ?? notice}</p>
       )}
 
       {result && (
@@ -321,17 +354,17 @@ export default function Capture() {
             <p className="px-1 text-xs text-ink-3">Split into {result.created.length} notes.</p>
           )}
           {result.created.map((c) => (
-            <div key={c.item.id} className="rounded-card border border-hairline bg-surface-1 p-4 text-[15px]">
+            <div key={c.item.id} className={`${CARD} p-4 text-[15px]`}>
               <div className="flex flex-wrap items-center gap-2">
                 <TypeChip type={c.item.type} />
                 <PriorityChip priority={c.item.priority} />
-                {c.due_at && <NeutralChip>due {formatDue(c.due_at)}</NeutralChip>}
+                {c.due_at && <Pill>due {formatDue(c.due_at)}</Pill>}
                 {(c.item.tags ?? []).map((t) => (
-                  <NeutralChip key={t}>#{t}</NeutralChip>
+                  <Pill key={t}>#{t}</Pill>
                 ))}
               </div>
 
-              <div className="mt-2 leading-snug">{c.item.title}</div>
+              <div className="mt-2.5 font-semibold leading-snug">{c.item.title}</div>
 
               {c.needs_review && (
                 <div

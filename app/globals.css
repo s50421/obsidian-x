@@ -66,6 +66,47 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* iPhone feel: no grey flash on tap, no accidental text selection on controls,
+   and one focus ring across the whole app (keyboard only — never on touch). */
+button,
+a,
+[role="button"] {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button,
+label,
+[role="button"] {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-accent-text);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Safe-area helpers for the installed PWA (notch + home indicator). Tailwind
+   arbitrary values can express these, but naming them keeps every screen
+   reaching for the same rhythm. */
+.obx-safe-x {
+  padding-left: max(env(safe-area-inset-left), 0px);
+  padding-right: max(env(safe-area-inset-right), 0px);
+}
+
+/* Bottom padding that clears the mobile tab bar (56px bar + 8px breathing
+   room) and the home indicator; flat on desktop where the bar is hidden. */
+.obx-pb-bar {
+  padding-bottom: calc(88px + env(safe-area-inset-bottom));
+}
+
+@media (min-width: 768px) {
+  .obx-pb-bar {
+    padding-bottom: 48px;
+  }
+}
+
 /* A quiet shimmer skeleton — never a spinner for lists. */
 .obx-skeleton {
   background: linear-gradient(

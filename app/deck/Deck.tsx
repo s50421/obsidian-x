@@ -5,7 +5,7 @@ import type { PointerEvent as ReactPointerEvent } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import type { DeckCard } from "@/app/api/deck/route";
 import DeckDetail from "../components/DeckDetail";
-import { PriorityChip, TypeChip } from "../components/ui";
+import { PageHeader, Pill, PriorityChip, TypeChip } from "../components/ui";
 import {
   decideSwipe,
   rotationForDrag,
@@ -122,13 +122,11 @@ function CardFront({ card, mode }: { card: DeckCard; mode: Mode }) {
         {isImport && card.subtitle && (
           <p className="mt-1.5 line-clamp-1 text-[13px] text-ink-3 line-through decoration-ink-3/60">{card.subtitle}</p>
         )}
-        <div className="mt-3 flex flex-wrap items-center gap-1.5">
+        <div className="mt-3.5 flex flex-wrap items-center gap-1.5">
           <TypeChip type={displayType} />
           {card.priority && <PriorityChip priority={card.priority} />}
           {displayTags.slice(0, 4).map((t) => (
-            <span key={t} className="rounded-full bg-white/[0.06] px-2.5 py-0.5 text-xs font-medium text-ink-2">
-              #{t}
-            </span>
+            <Pill key={t}>#{t}</Pill>
           ))}
           {displayTags.length > 4 && <span className="text-xs text-ink-3">+{displayTags.length - 4}</span>}
         </div>
@@ -142,11 +140,11 @@ function CardFront({ card, mode }: { card: DeckCard; mode: Mode }) {
         )}
       </div>
 
-      <div className="mt-3 flex items-center justify-between text-xs text-ink-3">
-        <span>
+      <div className="mt-4 flex items-center justify-between gap-3 border-t border-hairline pt-3 text-xs text-ink-3">
+        <span className="min-w-0 truncate">
           {card.source} · {timeAgo(card.createdAt)}
         </span>
-        <span>tap for full memory</span>
+        <span className="shrink-0 text-accent-text/70">tap for full detail</span>
       </div>
     </div>
   );
@@ -154,8 +152,11 @@ function CardFront({ card, mode }: { card: DeckCard; mode: Mode }) {
 
 function DeckSkeleton() {
   return (
-    <div className="relative mx-auto h-[60vh] max-h-[540px] w-full max-w-sm">
-      <div className="obx-skeleton absolute inset-0 rounded-card border border-hairline" style={{ transform: "scale(0.96) translateY(10px)" }} />
+    <div className="relative mx-auto h-[58vh] max-h-[540px] min-h-[380px] w-full max-w-sm" aria-busy="true" aria-label="Loading deck">
+      <div
+        className="obx-skeleton absolute inset-0 rounded-card border border-hairline"
+        style={{ transform: "scale(0.96) translateY(10px)" }}
+      />
       <div className="obx-skeleton absolute inset-0 rounded-card border border-hairline-2" />
     </div>
   );
@@ -174,18 +175,36 @@ function DeckClear({
 }) {
   const rightLabel = mode === "daily" ? "kept" : "approved";
   const leftLabel = mode === "daily" ? "archived" : "rejected";
+  const swept = counts.right + counts.left > 0;
+  const nothingToday = total === 0;
   return (
-    <div className="flex h-[60vh] max-h-[540px] flex-col items-center justify-center gap-2 rounded-card border border-dashed border-hairline-2 p-8 text-center">
-      <div className="flex h-12 w-12 items-center justify-center rounded-full bg-white/[0.06] text-2xl">🃏</div>
-      <div className="text-[17px] font-semibold text-ink">Deck clear</div>
-      {counts.right + counts.left > 0 && (
-        <div className="text-[13px] text-ink-2">
-          {counts.right} {rightLabel} · {counts.left} {leftLabel} this sweep
+    <div className="flex h-[58vh] max-h-[540px] min-h-[380px] flex-col items-center justify-center gap-2 rounded-card border border-dashed border-hairline-2 px-8 text-center">
+      <div className="mb-1 flex h-12 w-12 items-center justify-center rounded-full bg-white/[0.06] text-[20px] text-accent-text">
+        ✓
+      </div>
+      <div className="text-[17px] font-semibold text-ink">
+        {nothingToday ? (mode === "daily" ? "Nothing captured yet" : "No proposals waiting") : "Deck clear"}
+      </div>
+      <div className="max-w-[15rem] text-[13px] leading-relaxed text-ink-2">
+        {swept ? (
+          <>
+            {counts.right} {rightLabel} · {counts.left} {leftLabel} this sweep.
+          </>
+        ) : nothingToday ? (
+          mode === "daily" ? (
+            "Everything you capture today lands here for the evening sweep."
+          ) : (
+            "Re-titled and split imports queue up here for approval."
+          )
+        ) : (
+          "You're through today's memories — nothing left to decide."
+        )}
+      </div>
+      {total > 0 && (
+        <div className="text-[12px] tabular-nums text-ink-3">
+          {reviewed} of {total} reviewed
         </div>
       )}
-      <div className="text-[12px] text-ink-3">
-        {reviewed} of {total} total
-      </div>
     </div>
   );
 }
@@ -512,45 +531,60 @@ export default function Deck() {
   const progressPct = total > 0 ? Math.min(100, (reviewed / total) * 100) : 0;
 
   return (
-    <div className="mx-auto w-full max-w-sm flex-1 px-4 pb-6 pt-3 md:max-w-md md:pt-8">
-      <div className="mb-4 flex items-center justify-between">
-        <div>
-          <h1 className="text-[28px] font-bold tracking-[-0.022em] md:text-[22px]">Deck</h1>
-          <p className="mt-0.5 text-[13px] text-ink-2">
-            {total > 0 ? `${reviewed} of ${total} reviewed` : mode === "daily" ? "Nothing captured yet today" : "Nothing to import"}
-          </p>
-        </div>
-        <div className="flex rounded-control border border-hairline bg-surface-1 p-0.5">
-          <button
-            type="button"
-            onClick={() => switchMode("daily")}
-            className={`rounded-[9px] px-3 py-1.5 text-[13px] font-semibold transition ${
-              mode === "daily" ? "bg-white/[0.08] text-ink" : "text-ink-2"
-            }`}
+    <div className="obx-safe-x mx-auto w-full max-w-sm flex-1 px-4 pt-4 md:max-w-md md:pt-8">
+      <PageHeader
+        className="mb-4 md:mb-4"
+        title="Deck"
+        subtitle={
+          mode === "daily" ? "Today's captures — keep or archive." : "Proposed re-titles — approve or reject."
+        }
+        action={
+          <div
+            role="tablist"
+            aria-label="Deck mode"
+            className="flex rounded-control border border-hairline bg-surface-1 p-0.5"
           >
-            Daily
-          </button>
-          <button
-            type="button"
-            onClick={() => switchMode("import")}
-            className={`rounded-[9px] px-3 py-1.5 text-[13px] font-semibold transition ${
-              mode === "import" ? "bg-white/[0.08] text-ink" : "text-ink-2"
-            }`}
-          >
-            Import
-          </button>
-        </div>
-      </div>
+            {(["daily", "import"] as const).map((m) => (
+              <button
+                key={m}
+                type="button"
+                role="tab"
+                aria-selected={mode === m}
+                onClick={() => switchMode(m)}
+                className={`h-9 rounded-[9px] px-3 text-[13px] font-semibold capitalize transition ${
+                  mode === m ? "bg-white/[0.10] text-ink shadow-[0_1px_2px_rgba(0,0,0,0.3)]" : "text-ink-2 hover:text-ink"
+                }`}
+              >
+                {m}
+              </button>
+            ))}
+          </div>
+        }
+      />
 
-      <div className="mb-5 h-1 w-full overflow-hidden rounded-full bg-white/[0.06]">
-        <div className="h-full bg-accent transition-[width] duration-300 ease-out" style={{ width: `${progressPct}%` }} />
+      <div className="mb-4 flex items-center gap-3">
+        <div
+          className="h-1 flex-1 overflow-hidden rounded-full bg-white/[0.06]"
+          role="progressbar"
+          aria-valuenow={reviewed}
+          aria-valuemin={0}
+          aria-valuemax={total}
+        >
+          <div
+            className="h-full rounded-full bg-accent transition-[width] duration-300 ease-out"
+            style={{ width: `${progressPct}%` }}
+          />
+        </div>
+        <span className="shrink-0 text-xs tabular-nums text-ink-3">
+          {total > 0 ? `${reviewed}/${total}` : "0"}
+        </span>
       </div>
 
       {error && (
-        <div className="mb-4 rounded-control border border-hairline-2 bg-danger/10 px-3 py-2 text-[13px] text-danger">
-          {error}{" "}
-          <button className="font-semibold underline" onClick={() => load(mode)}>
-            retry
+        <div className="mb-4 flex items-center gap-2 rounded-control border border-hairline-2 bg-danger/10 px-3.5 py-2.5 text-[13px] text-danger">
+          <span className="min-w-0 flex-1">{error}</span>
+          <button className="shrink-0 font-semibold underline" onClick={() => load(mode)}>
+            Retry
           </button>
         </div>
       )}
@@ -558,11 +592,19 @@ export default function Deck() {
       {loading && !initialLoadDone ? (
         <DeckSkeleton />
       ) : top ? (
-        <div className="relative mx-auto h-[60vh] max-h-[540px] w-full">
+        <div className="relative mx-auto h-[58vh] max-h-[540px] min-h-[380px] w-full">
+          {/* Two cards behind the top one give the stack real depth without
+              rendering a third payload. */}
+          <div
+            className="absolute inset-0 rounded-card border border-hairline bg-surface-1"
+            style={{ transform: "scale(0.92) translateY(20px)", opacity: 0.4 }}
+            aria-hidden
+          />
           {next && (
             <div
-              className="absolute inset-0 rounded-card border border-hairline bg-surface-1 shadow-[0_8px_32px_rgba(0,0,0,0.35)]"
+              className="absolute inset-0 overflow-hidden rounded-card border border-hairline bg-surface-1 shadow-[0_8px_32px_rgba(0,0,0,0.35)]"
               style={{ transform: "scale(0.96) translateY(10px)", opacity: 0.7 }}
+              aria-hidden
             >
               <CardFront card={next} mode={mode} />
             </div>
@@ -572,7 +614,10 @@ export default function Deck() {
             onPointerMove={onPointerMove}
             onPointerUp={onPointerUp}
             onPointerCancel={onPointerCancel}
-            className="absolute inset-0 touch-none overflow-hidden rounded-card border border-hairline-2 bg-surface-1 shadow-[0_16px_48px_rgba(0,0,0,0.45)]"
+            role="button"
+            tabIndex={0}
+            aria-label="Card — tap for full detail"
+            className="absolute inset-0 touch-none overflow-hidden rounded-card border border-hairline-2 bg-surface-1 shadow-[0_20px_56px_rgba(0,0,0,0.5)]"
             style={{
               transform: `translate(${dragX}px, ${dragY}px) rotate(${rotationForDrag(dragX, cardWidth)}deg)`,
               transition: dragging ? "none" : exit ? `transform ${EXIT_MS}ms cubic-bezier(0.2,0.8,0.2,1)` : undefined,
@@ -588,35 +633,47 @@ export default function Deck() {
         <DeckClear mode={mode} total={total} reviewed={reviewed} counts={sessionCounts} />
       )}
 
-      <div className="mt-5 flex items-center justify-center gap-6">
-        <button
-          type="button"
-          onClick={() => buttonSwipe("left")}
-          disabled={!top || busy}
-          aria-label={mode === "daily" ? "Archive" : "Reject"}
-          className="flex h-14 w-14 items-center justify-center rounded-full border border-hairline-2 bg-surface-2 text-2xl text-danger transition active:scale-95 disabled:opacity-40"
-        >
-          ✕
-        </button>
-        <button
-          type="button"
-          onClick={() => top && setExpanded(true)}
-          disabled={!top}
-          aria-label="Expand"
-          className="flex h-11 w-11 items-center justify-center rounded-full bg-white/[0.06] text-ink-2 transition active:scale-95 disabled:opacity-40"
-        >
-          ⤢
-        </button>
-        <button
-          type="button"
-          onClick={() => buttonSwipe("right")}
-          disabled={!top || busy}
-          aria-label={mode === "daily" ? "Keep" : "Approve"}
-          className="flex h-14 w-14 items-center justify-center rounded-full border border-hairline-2 bg-surface-2 text-2xl transition active:scale-95 disabled:opacity-40"
-          style={{ color: "#93d8a8" }}
-        >
-          ✓
-        </button>
+      {/* Action row — one thumb-arc below the card, clear of the tab bar and
+          the home indicator. Labels under the circles so the gesture and the
+          button always agree on what they do. */}
+      <div className="mt-5 flex items-start justify-center gap-8 pb-[calc(96px+env(safe-area-inset-bottom))] md:gap-10 md:pb-10">
+        <div className="flex w-16 flex-col items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => buttonSwipe("left")}
+            disabled={!top || busy}
+            aria-label={mode === "daily" ? "Archive" : "Reject"}
+            className="flex h-[60px] w-[60px] items-center justify-center rounded-full border border-hairline-2 bg-surface-2 text-[22px] text-danger shadow-[0_4px_16px_rgba(0,0,0,0.35)] transition active:scale-95 disabled:pointer-events-none disabled:opacity-40"
+          >
+            ✕
+          </button>
+          <span className="text-[11px] font-semibold text-ink-3">{mode === "daily" ? "Archive" : "Reject"}</span>
+        </div>
+        <div className="flex w-16 flex-col items-center gap-1.5 pt-2">
+          <button
+            type="button"
+            onClick={() => top && setExpanded(true)}
+            disabled={!top}
+            aria-label="Open full detail"
+            className="flex h-11 w-11 items-center justify-center rounded-full bg-white/[0.06] text-ink-2 transition hover:bg-white/[0.1] active:scale-95 disabled:pointer-events-none disabled:opacity-40"
+          >
+            ⤢
+          </button>
+          <span className="text-[11px] font-semibold text-ink-3">Detail</span>
+        </div>
+        <div className="flex w-16 flex-col items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => buttonSwipe("right")}
+            disabled={!top || busy}
+            aria-label={mode === "daily" ? "Keep" : "Approve"}
+            className="flex h-[60px] w-[60px] items-center justify-center rounded-full border border-hairline-2 bg-surface-2 text-[22px] shadow-[0_4px_16px_rgba(0,0,0,0.35)] transition active:scale-95 disabled:pointer-events-none disabled:opacity-40"
+            style={{ color: "#93d8a8" }}
+          >
+            ✓
+          </button>
+          <span className="text-[11px] font-semibold text-ink-3">{mode === "daily" ? "Keep" : "Approve"}</span>
+        </div>
       </div>
 
       {expanded && top && (

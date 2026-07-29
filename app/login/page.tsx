@@ -21,7 +21,7 @@ export default async function LoginPage({
   }
 
   return (
-    <main className="flex flex-1 flex-col items-center justify-center px-6 py-16">
+    <main className="obx-safe-x flex flex-1 flex-col items-center justify-center px-6 py-16">
       <div className="flex w-full max-w-sm flex-col items-center rounded-[24px] border border-hairline bg-surface-1 px-8 py-11 text-center shadow-[0_24px_60px_rgba(0,0,0,0.4)]">
         <div className="mb-5 flex h-16 w-16 items-center justify-center rounded-[20px] border border-hairline-2 bg-[linear-gradient(160deg,#2a2a36,#16161c)]">
           <div className="h-5 w-5 rotate-45 rounded-[5px] bg-accent-text" />

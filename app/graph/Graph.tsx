@@ -211,7 +211,7 @@ export default function Graph({ nodes, edges }: { nodes: Node[]; edges: Edge[] }
       </svg>
 
       {/* floating material legend */}
-      <div className="absolute bottom-4 left-4 flex flex-wrap gap-3 rounded-2xl border border-hairline-2 bg-material-2 px-4 py-2.5 backdrop-blur-[20px]">
+      <div className="absolute bottom-3 left-3 right-3 flex flex-wrap gap-x-3 gap-y-1.5 rounded-card border border-hairline-2 bg-material-2 px-4 py-2.5 backdrop-blur-[20px] md:right-auto">
         {types.map((t) => (
           <span key={t} className="flex items-center gap-1.5 text-[11px] font-semibold text-ink-2">
             <span className="inline-block h-[7px] w-[7px] rounded-full" style={{ background: color(t) }} />
@@ -219,7 +219,7 @@ export default function Graph({ nodes, edges }: { nodes: Node[]; edges: Edge[] }
           </span>
         ))}
       </div>
-      <div className="mt-2 px-1 text-xs text-ink-3">Drag nodes · scroll to zoom · drag background to pan</div>
+      <div className="mt-2.5 px-1 text-xs text-ink-3">Drag nodes · scroll to zoom · drag background to pan</div>
     </div>
   );
 }

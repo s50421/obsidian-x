@@ -55,16 +55,19 @@ export default function InterviewPage() {
   return (
     <>
       <AppNav hideMobileBar />
-      <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col px-4 md:px-8">
-        <div className="flex items-center justify-between border-b border-hairline py-3">
-          <div>
+      <main className="obx-safe-x mx-auto flex w-full max-w-3xl flex-1 flex-col px-4 md:px-8">
+        <div className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-hairline bg-base pb-3 pt-[calc(12px+env(safe-area-inset-top))] md:pt-3">
+          <div className="min-w-0">
             <h1 className="text-[20px] font-bold tracking-[-0.015em]">Interview</h1>
-            <p className="mt-0.5 text-xs text-ink-3">
+            <p className="mt-0.5 text-[13px] text-ink-2">
               Question {Math.max(1, questionNo)} · every answer is saved
               {saved > 0 ? ` · ${saved} saved` : ""}
             </p>
           </div>
-          <Link href="/" className="text-[13px] font-semibold text-ink-2 transition hover:text-ink">
+          <Link
+            href="/"
+            className="-mr-2 inline-flex h-11 shrink-0 items-center rounded-control px-3 text-[13px] font-semibold text-ink-2 transition hover:bg-white/[0.06] hover:text-ink"
+          >
             Done
           </Link>
         </div>
@@ -84,8 +87,16 @@ export default function InterviewPage() {
             </div>
           ))}
           {loading && (
-            <div className="flex">
-              <div className="rounded-[18px] rounded-bl-[6px] bg-surface-2 px-4 py-3 text-[15px] text-ink-3">…</div>
+            <div className="flex" aria-busy="true">
+              <div className="flex items-center gap-1.5 rounded-[18px] rounded-bl-[6px] border border-hairline bg-surface-2 px-4 py-4">
+                {[0, 1, 2].map((i) => (
+                  <span
+                    key={i}
+                    className="h-1.5 w-1.5 rounded-full bg-ink-3"
+                    style={{ animation: `obx-pulse 1.2s ${i * 0.18}s infinite` }}
+                  />
+                ))}
+              </div>
             </div>
           )}
           <div ref={bottomRef} />
@@ -103,12 +114,14 @@ export default function InterviewPage() {
             }}
             rows={1}
             placeholder="Type your answer…"
-            className="max-h-32 flex-1 resize-none rounded-3xl border border-hairline bg-surface-2 px-4.5 py-3 text-[15px] text-ink outline-none transition placeholder:text-ink-3 focus:border-accent focus:shadow-[0_0_0_3px_rgba(80,107,242,0.25)]"
+            aria-label="Your answer"
+            className="max-h-32 min-h-12 flex-1 resize-none rounded-3xl border border-hairline bg-surface-2 px-4.5 py-3.5 text-[16px] text-ink outline-none transition placeholder:text-ink-3 focus:border-accent focus:shadow-[0_0_0_3px_rgba(80,107,242,0.25)]"
           />
           <button
             onClick={send}
             disabled={loading || !input.trim()}
-            className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-accent text-lg font-semibold text-white transition disabled:opacity-40"
+            aria-label="Send answer"
+            className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-accent text-lg font-semibold text-white transition active:scale-95 disabled:pointer-events-none disabled:opacity-40"
           >
             ↑
           </button>

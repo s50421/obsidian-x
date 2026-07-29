@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { BTN_DANGER, BTN_PRIMARY } from "../components/ui";
 
 export default function ApprovalButtons({ id }: { id: string }) {
   const router = useRouter();
@@ -31,22 +32,22 @@ export default function ApprovalButtons({ id }: { id: string }) {
   }
 
   return (
-    <div className="flex shrink-0 items-center gap-2.5">
+    <div className="flex shrink-0 flex-wrap items-center gap-2.5">
       <button
         onClick={() => act("approve")}
         disabled={busy !== null}
-        className="h-11 flex-1 rounded-control bg-accent px-6 text-[14px] font-semibold text-white transition disabled:opacity-50 md:flex-none"
+        className={`${BTN_PRIMARY} flex-1 md:flex-none`}
       >
         {busy === "approve" ? "…" : "Approve"}
       </button>
       <button
         onClick={() => act("reject")}
         disabled={busy !== null}
-        className="h-11 flex-1 rounded-control bg-white/[0.08] px-6 text-[14px] font-semibold text-danger transition disabled:opacity-50 md:flex-none"
+        className={`${BTN_DANGER} flex-1 md:flex-none`}
       >
         {busy === "reject" ? "…" : "Reject"}
       </button>
-      {error && <span className="text-xs text-danger">{error}</span>}
+      {error && <span className="w-full text-xs text-danger md:w-auto">{error}</span>}
     </div>
   );
 }

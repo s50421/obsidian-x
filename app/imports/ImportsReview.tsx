@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { TYPE_HUE, TypeChip } from "../components/ui";
+import { CARD_LIST, EmptyState, FIELD, INPUT, SkeletonRows, TYPE_HUE, TypeChip } from "../components/ui";
 
 type Row = { id: string; title: string; type: string; source: string; tags: string[]; snippet: string };
 
@@ -19,6 +19,9 @@ const SOURCE_LABEL: Record<string, string> = {
   "apple-notes": "Apple Notes",
   "chatgpt-profile": "ChatGPT profile",
 };
+
+const PAGER =
+  "inline-flex h-11 items-center rounded-control bg-white/[0.08] px-4 text-[13px] font-semibold text-ink transition hover:bg-white/[0.12] disabled:pointer-events-none disabled:opacity-40";
 
 export default function ImportsReview() {
   const [rows, setRows] = useState<Row[]>([]);
@@ -96,20 +99,22 @@ export default function ImportsReview() {
     <div>
       {/* search + source */}
       <div className="mb-3 flex flex-wrap items-center gap-2">
-        <div className="flex h-11 min-w-0 flex-1 items-center gap-2 rounded-control border border-hairline bg-surface-2 px-3.5 transition focus-within:border-accent focus-within:shadow-[0_0_0_3px_rgba(80,107,242,0.25)]">
+        <div className={`${FIELD} h-11 min-w-0 flex-1`}>
           <span className="text-ink-3">⌕</span>
           <input
             value={q}
             onChange={(e) => setQ(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && load(0, type, q, source)}
-            placeholder="Search imports…  (Enter)"
-            className="w-full bg-transparent text-[15px] text-ink outline-none placeholder:text-ink-3"
+            placeholder="Search imports…"
+            aria-label="Search imports"
+            className={INPUT}
           />
         </div>
         <select
           value={source}
           onChange={(e) => setSource(e.target.value)}
-          className="h-11 rounded-control border border-hairline bg-surface-2 px-3 text-sm text-ink outline-none"
+          aria-label="Import source"
+          className="h-11 rounded-control border border-hairline bg-surface-2 px-3 text-[15px] text-ink outline-none transition focus:border-accent"
         >
           {SOURCES.map((s) => (
             <option key={s.value} value={s.value} className="bg-surface-1">
@@ -129,7 +134,7 @@ export default function ImportsReview() {
             <button
               key={t || "all"}
               onClick={() => setType(t)}
-              className="shrink-0 rounded-full px-3.5 py-1.5 text-[13px] font-semibold transition"
+              className="inline-flex h-9 shrink-0 items-center rounded-full px-3.5 text-[13px] font-semibold transition"
               style={
                 active
                   ? { background: "rgba(255,255,255,0.12)", color: "rgba(255,255,255,0.92)" }
@@ -144,28 +149,26 @@ export default function ImportsReview() {
         })}
       </div>
 
-      <div className="mb-2 flex items-center justify-between px-1 text-xs text-ink-3">
-        <button onClick={toggleAll} className="font-semibold text-ink-2 transition hover:text-ink">
+      <div className="mb-2 flex items-center justify-between gap-3 px-1 text-xs text-ink-3">
+        <button
+          onClick={toggleAll}
+          className="-ml-1 inline-flex min-h-9 items-center rounded-control px-1 font-semibold text-ink-2 transition hover:text-ink"
+        >
           {allOnPage ? "Clear page" : "Select page"} · {selected.size} selected
         </button>
-        <span>{total} on hold</span>
+        <span className="tabular-nums">{total} on hold</span>
       </div>
       {notice && <p className="mb-2 px-1 text-xs text-ink-2">{notice}</p>}
 
       {loading ? (
-        <div className="space-y-2">
-          {Array.from({ length: 5 }).map((_, i) => (
-            <div key={i} className="obx-skeleton h-14 rounded-card" />
-          ))}
-        </div>
+        <SkeletonRows rows={6} height="h-16" />
       ) : rows.length === 0 ? (
-        <div className="flex flex-col items-center gap-1.5 rounded-card border border-dashed border-hairline-2 p-8 text-center">
-          <div className="flex h-9 w-9 items-center justify-center rounded-control bg-white/[0.06] text-ink-3">✓</div>
-          <div className="text-[15px] font-semibold">Nothing left on hold here</div>
-          <div className="text-[13px] text-ink-2">Try another source or filter.</div>
-        </div>
+        <EmptyState
+          title="Nothing left on hold here"
+          body="Either this source is fully triaged, or the filter is too narrow — try another source or type."
+        />
       ) : (
-        <div className="overflow-hidden rounded-card border border-hairline bg-surface-1">
+        <div className={CARD_LIST}>
           {rows.map((r, idx) => {
             const sel = selected.has(r.id);
             const sub = [SOURCE_LABEL[r.source] ?? r.source, r.snippet].filter(Boolean).join(" · ");
@@ -173,7 +176,16 @@ export default function ImportsReview() {
               <div
                 key={r.id}
                 onClick={() => toggle(r.id)}
-                className={`flex cursor-pointer items-center gap-3 p-4 transition ${idx > 0 ? "border-t border-hairline" : ""}`}
+                role="checkbox"
+                aria-checked={sel}
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    toggle(r.id);
+                  }
+                }}
+                className={`flex min-h-14 cursor-pointer items-center gap-3 px-4 py-3 transition hover:bg-white/[0.03] ${idx > 0 ? "border-t border-hairline" : ""}`}
                 style={sel ? { background: "rgba(80,107,242,0.08)" } : undefined}
               >
                 <div
@@ -183,8 +195,8 @@ export default function ImportsReview() {
                   {sel ? "✓" : ""}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <div className="truncate text-[14px] text-ink">{r.title}</div>
-                  {sub && <div className="mt-0.5 truncate text-xs text-ink-3">{sub}</div>}
+                  <div className="truncate text-[15px] font-medium text-ink">{r.title}</div>
+                  {sub && <div className="mt-0.5 truncate text-[13px] text-ink-3">{sub}</div>}
                 </div>
                 <TypeChip type={r.type} />
               </div>
@@ -194,42 +206,44 @@ export default function ImportsReview() {
       )}
 
       {total > limit && (
-        <div className="mt-4 flex items-center justify-between text-sm">
+        <div className="mt-4 flex items-center justify-between gap-3">
           <button
             onClick={() => load(Math.max(0, offset - limit), type, q, source)}
             disabled={offset === 0 || loading}
-            className="rounded-control bg-white/[0.08] px-4 py-2 text-[13px] font-semibold text-ink disabled:opacity-40"
+            className={PAGER}
           >
             ← Prev
           </button>
-          <span className="text-xs text-ink-3">
+          <span className="text-xs tabular-nums text-ink-3">
             {offset + 1}–{Math.min(offset + limit, total)} of {total}
           </span>
           <button
             onClick={() => load(offset + limit, type, q, source)}
             disabled={offset + limit >= total || loading}
-            className="rounded-control bg-white/[0.08] px-4 py-2 text-[13px] font-semibold text-ink disabled:opacity-40"
+            className={PAGER}
           >
             Next →
           </button>
         </div>
       )}
 
-      {/* floating action bar — sits above the mobile tab bar */}
+      {/* Floating action bar — clears the mobile tab bar and the home indicator. */}
       {selected.size > 0 && (
-        <div className="fixed inset-x-3 bottom-[calc(84px+env(safe-area-inset-bottom))] z-30 flex items-center gap-3 rounded-[18px] border border-hairline-2 bg-material-2 py-2.5 pl-5 pr-2.5 shadow-[0_12px_32px_rgba(0,0,0,0.45)] backdrop-blur-[20px] md:inset-x-auto md:left-1/2 md:bottom-6 md:-translate-x-1/2">
-          <div className="flex-1 text-[14px] font-semibold md:flex-none md:pr-2">{selected.size} selected</div>
+        <div className="obx-safe-x fixed inset-x-3 bottom-[calc(88px+env(safe-area-inset-bottom))] z-30 flex items-center gap-2.5 rounded-card border border-hairline-2 bg-material-2 py-2.5 pl-5 pr-2.5 shadow-[0_12px_32px_rgba(0,0,0,0.45)] backdrop-blur-[20px] md:inset-x-auto md:bottom-6 md:left-1/2 md:-translate-x-1/2">
+          <div className="flex-1 text-[14px] font-semibold tabular-nums md:flex-none md:pr-2">
+            {selected.size} selected
+          </div>
           <button
             onClick={() => act("activate")}
             disabled={busy}
-            className="h-10 rounded-[11px] bg-accent px-4 text-[14px] font-semibold text-white transition disabled:opacity-50"
+            className="inline-flex h-11 items-center rounded-control bg-accent px-4 text-[14px] font-semibold text-white transition active:scale-[0.98] disabled:pointer-events-none disabled:opacity-50"
           >
             Activate
           </button>
           <button
             onClick={() => act("remove")}
             disabled={busy}
-            className="h-10 rounded-[11px] bg-white/[0.08] px-4 text-[14px] font-semibold text-danger transition disabled:opacity-50"
+            className="inline-flex h-11 items-center rounded-control bg-white/[0.08] px-4 text-[14px] font-semibold text-danger transition active:scale-[0.98] disabled:pointer-events-none disabled:opacity-50"
           >
             Remove
           </button>

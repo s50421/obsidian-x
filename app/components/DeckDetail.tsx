@@ -2,13 +2,33 @@
 
 import { useEffect, useState } from "react";
 import type { DeckCard } from "@/app/api/deck/route";
-import { PriorityChip, StatusChip, TypeChip } from "./ui";
+import {
+  BTN_PRIMARY,
+  BTN_SECONDARY,
+  CARD_INSET,
+  InspectorSection,
+  MetaRow,
+  Pill,
+  PriorityChip,
+  StatusChip,
+  TypeChip,
+} from "./ui";
 
-// Full-detail sheet for the top deck card — tap-to-expand target. Shows the
-// original memory (body + raw, if they differ), type/tags/priority, entities,
-// created/source, the AI's reason (proposals only), similarity-linked items,
-// and — via `editing` — an inline title/type/tags editor. Pure presentational
-// wrapper around callbacks the Deck orchestrator supplies; it owns no fetch.
+// The item inspector — the PWA's "see deeper" surface, reached by tapping the
+// top deck card. One item's whole story, in a fixed order:
+//
+//   1. what it is now      — title, type/priority/status, tags
+//   2. what the AI read    — the model's reading of the capture, with its
+//                            confidence and reasoning where it proposed a change
+//   3. the memory itself   — cleaned body, and the raw capture beneath it when
+//                            the two differ (so nothing is ever hidden)
+//   4. what it connects to — similar items, entities
+//   5. provenance          — source, captured-at, due
+//
+// Pure presentational wrapper around callbacks the Deck orchestrator supplies;
+// it owns no fetch. `editing` swaps the body for an inline title/type/tags
+// editor. Actions stay pinned to the bottom of the sheet, above the home
+// indicator, so the decision is always thumb-reachable.
 
 const ITEM_TYPES = ["note", "task", "idea", "shopping", "reference", "person", "event"];
 
@@ -32,6 +52,9 @@ function fmtDate(iso: string): string {
   }
 }
 
+const FIELD_INPUT =
+  "h-11 w-full rounded-control border border-hairline bg-surface-2 px-3.5 text-[15px] text-ink outline-none transition focus:border-accent focus:shadow-[0_0_0_3px_rgba(80,107,242,0.2)]";
+
 export default function DeckDetail({ card, mode, editing, busy, onClose, onEditStart, onEditCancel, onSaveEdit, onCommit }: Props) {
   const isImport = mode === "import";
   const [title, setTitle] = useState(card.title);
@@ -46,6 +69,15 @@ export default function DeckDetail({ card, mode, editing, busy, onClose, onEditS
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [card.id, editing]);
 
+  // Escape closes the sheet, matching every other dismissible surface.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
   const save = () => {
     const tags = tagsStr.split(",").map((t) => t.trim()).filter(Boolean);
     if (isImport) {
@@ -56,202 +88,237 @@ export default function DeckDetail({ card, mode, editing, busy, onClose, onEditS
     }
   };
 
+  const shownType = isImport ? (card.newType ?? card.type) : card.type;
+  const shownTags = isImport ? (card.newTags ?? card.tags) : card.tags;
+  const rawDiffers = !!card.raw && card.raw.trim() !== "" && card.raw.trim() !== card.body.trim();
+
   return (
     <div
-      className="fixed inset-0 z-[60] flex items-end justify-center bg-black/60 backdrop-blur-sm md:items-center"
+      className="fixed inset-0 z-[60] flex items-end justify-center bg-black/60 backdrop-blur-sm md:items-center md:p-6"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Item detail"
       onClick={onClose}
     >
       <div
-        className="max-h-[88vh] w-full max-w-lg overflow-y-auto rounded-t-[24px] border border-hairline-2 bg-surface-1 p-5 shadow-[0_-16px_48px_rgba(0,0,0,0.5)] md:rounded-card md:p-6"
+        className="flex max-h-[92vh] w-full max-w-lg flex-col overflow-hidden rounded-t-[24px] border border-hairline-2 bg-surface-1 shadow-[0_-16px_48px_rgba(0,0,0,0.5)] md:max-h-[86vh] md:rounded-card"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="mb-4 flex items-center justify-between">
-          <span className="text-xs font-semibold uppercase tracking-[0.08em] text-ink-3">
-            {isImport ? `Proposed ${card.proposalKind}` : "Today's memory"}
-          </span>
-          <button onClick={onClose} className="text-ink-3 transition hover:text-ink" aria-label="Close">
-            ✕
-          </button>
+        {/* Sheet header — grab handle on mobile, context label, close. */}
+        <div className="shrink-0 border-b border-hairline px-5 pb-3 pt-2.5 md:px-6 md:pt-4">
+          <div className="mx-auto mb-3 h-1 w-9 rounded-full bg-white/[0.18] md:hidden" aria-hidden />
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-xs font-semibold uppercase tracking-[0.08em] text-ink-3">
+              {isImport ? `Proposed ${card.proposalKind ?? "retitle"}` : "Today's memory"}
+            </span>
+            <button
+              onClick={onClose}
+              className="-mr-2 flex h-11 w-11 items-center justify-center rounded-full text-ink-3 transition hover:bg-white/[0.06] hover:text-ink"
+              aria-label="Close"
+            >
+              ✕
+            </button>
+          </div>
         </div>
 
-        {editing ? (
-          <div className="space-y-3">
-            <div>
-              <label className="mb-1 block text-xs font-semibold text-ink-3">Title</label>
-              <input
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                className="w-full rounded-control border border-hairline bg-surface-2 px-3 py-2 text-[15px] text-ink outline-none focus:border-accent"
-                autoFocus
-              />
-            </div>
-            <div className="flex gap-3">
-              <div className="flex-1">
-                <label className="mb-1 block text-xs font-semibold text-ink-3">Type</label>
-                <select
-                  value={type}
-                  onChange={(e) => setType(e.target.value)}
-                  className="w-full rounded-control border border-hairline bg-surface-2 px-3 py-2 text-[14px] text-ink outline-none"
-                >
-                  {ITEM_TYPES.map((t) => (
-                    <option key={t} value={t} className="bg-surface-1">
-                      {t}
-                    </option>
-                  ))}
-                </select>
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4 md:px-6">
+          {editing ? (
+            <div className="space-y-4">
+              <div>
+                <label className="mb-1.5 block text-xs font-semibold uppercase tracking-[0.08em] text-ink-3">
+                  Title
+                </label>
+                <input value={title} onChange={(e) => setTitle(e.target.value)} className={FIELD_INPUT} autoFocus />
               </div>
-              <div className="flex-[2]">
-                <label className="mb-1 block text-xs font-semibold text-ink-3">Tags (comma-separated)</label>
-                <input
-                  value={tagsStr}
-                  onChange={(e) => setTagsStr(e.target.value)}
-                  className="w-full rounded-control border border-hairline bg-surface-2 px-3 py-2 text-[14px] text-ink outline-none focus:border-accent"
-                />
+              <div className="flex gap-3">
+                <div className="flex-1">
+                  <label className="mb-1.5 block text-xs font-semibold uppercase tracking-[0.08em] text-ink-3">
+                    Type
+                  </label>
+                  <select value={type} onChange={(e) => setType(e.target.value)} className={FIELD_INPUT}>
+                    {ITEM_TYPES.map((t) => (
+                      <option key={t} value={t} className="bg-surface-1">
+                        {t}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="flex-[2]">
+                  <label className="mb-1.5 block text-xs font-semibold uppercase tracking-[0.08em] text-ink-3">
+                    Tags
+                  </label>
+                  <input
+                    value={tagsStr}
+                    onChange={(e) => setTagsStr(e.target.value)}
+                    placeholder="comma, separated"
+                    className={FIELD_INPUT}
+                  />
+                </div>
               </div>
             </div>
-            <div className="flex gap-2 pt-1">
-              <button
-                onClick={save}
-                disabled={busy || !title.trim()}
-                className="h-10 flex-1 rounded-control bg-accent text-[14px] font-semibold text-white transition disabled:opacity-50"
+          ) : (
+            <>
+              {/* 1 · what it is now */}
+              <h2 className="text-[20px] font-bold leading-snug tracking-[-0.01em] text-ink">{card.title}</h2>
+              {card.subtitle && (
+                <p className="mt-1.5 text-[13px] text-ink-3">
+                  <span className="text-ink-3/70">was</span>{" "}
+                  <span className="line-through decoration-ink-3/60">{card.subtitle}</span>
+                </p>
+              )}
+
+              <div className="mt-3 flex flex-wrap items-center gap-1.5">
+                <TypeChip type={shownType} />
+                {card.priority && <PriorityChip priority={card.priority} />}
+                <StatusChip status={card.status} />
+                {shownTags.map((t) => (
+                  <Pill key={t}>#{t}</Pill>
+                ))}
+              </div>
+
+              {/* Split preview — what approving this proposal would produce. */}
+              {card.proposalKind === "split" && card.parts && card.parts.length > 0 && (
+                <InspectorSection label={`Splits into ${card.parts.length} items`}>
+                  <div className="space-y-2">
+                    {card.parts.map((p, i) => (
+                      <div key={i} className={`${CARD_INSET} p-3`}>
+                        <div className="flex items-center gap-2">
+                          <TypeChip type={p.type} />
+                          <span className="min-w-0 flex-1 truncate text-[14px] font-semibold text-ink">{p.title}</span>
+                        </div>
+                        <p className="mt-1.5 line-clamp-3 text-[13px] leading-relaxed text-ink-2">{p.body}</p>
+                      </div>
+                    ))}
+                  </div>
+                </InspectorSection>
+              )}
+
+              {/* 2 · what the AI read */}
+              <InspectorSection
+                label="AI reading"
+                trailing={card.confidence != null ? `${Math.round(card.confidence * 100)}% confident` : undefined}
               >
-                Save
-              </button>
-              <button
-                onClick={onEditCancel}
-                disabled={busy}
-                className="h-10 flex-1 rounded-control bg-white/[0.08] text-[14px] font-semibold text-ink transition disabled:opacity-50"
-              >
+                <div className={`${CARD_INSET} px-3.5 py-2`}>
+                  <MetaRow label="Type">{shownType}</MetaRow>
+                  <MetaRow label="Tags">
+                    {shownTags.length > 0 ? (
+                      <span className="flex flex-wrap gap-1.5">
+                        {shownTags.map((t) => (
+                          <Pill key={t}>#{t}</Pill>
+                        ))}
+                      </span>
+                    ) : (
+                      <span className="text-ink-3">none</span>
+                    )}
+                  </MetaRow>
+                  <MetaRow label="Due">
+                    {card.dueAt ? fmtDate(card.dueAt) : <span className="text-ink-3">no date read</span>}
+                  </MetaRow>
+                  <MetaRow label="Entities">
+                    {card.entities.length > 0 ? (
+                      <span className="flex flex-wrap gap-1.5">
+                        {card.entities.map((e, i) => (
+                          <Pill key={i}>
+                            {e.name}
+                            <span className="text-ink-3">· {e.kind}</span>
+                          </Pill>
+                        ))}
+                      </span>
+                    ) : (
+                      <span className="text-ink-3">none found</span>
+                    )}
+                  </MetaRow>
+                </div>
+
+                {card.reason && (
+                  <div className="mt-2 rounded-control border border-dashed border-hairline-2 bg-accent-soft/40 p-3">
+                    <div className="mb-1 text-xs font-semibold uppercase tracking-[0.08em] text-accent-text">
+                      Why it proposed this
+                    </div>
+                    <p className="text-[13px] leading-relaxed text-ink-2">{card.reason}</p>
+                  </div>
+                )}
+
+                {isImport && card.proposalKind === "retitle" && (
+                  <p className="mt-2 text-xs leading-relaxed text-ink-3">
+                    Multiple topics in here? Full note-splitting runs in the reprocess pipeline — reject and it&apos;ll
+                    be reconsidered, or approve and split it manually afterward.
+                  </p>
+                )}
+              </InspectorSection>
+
+              {/* 3 · the memory itself */}
+              <InspectorSection label={rawDiffers ? "Cleaned memory" : isImport ? "Original memory" : "Full memory"}>
+                <p className="whitespace-pre-wrap text-[15px] leading-relaxed text-ink">{card.body}</p>
+              </InspectorSection>
+
+              {rawDiffers && (
+                <InspectorSection label="Raw capture" trailing="exactly as it arrived">
+                  <p className={`${CARD_INSET} whitespace-pre-wrap p-3 text-[13px] leading-relaxed text-ink-2`}>
+                    {card.raw}
+                  </p>
+                </InspectorSection>
+              )}
+
+              {/* 4 · what it connects to */}
+              {card.links.length > 0 && (
+                <InspectorSection label="Linked items" trailing={`${card.links.length}`}>
+                  <div className="space-y-1.5">
+                    {card.links.map((l) => (
+                      <div key={l.id} className={`${CARD_INSET} flex items-center gap-2 px-3 py-2.5 text-[13px]`}>
+                        <TypeChip type={l.type} />
+                        <span className="min-w-0 flex-1 truncate text-ink-2">{l.title}</span>
+                      </div>
+                    ))}
+                  </div>
+                </InspectorSection>
+              )}
+
+              {/* 5 · provenance */}
+              <InspectorSection label="Provenance">
+                <div className={`${CARD_INSET} px-3.5 py-2`}>
+                  <MetaRow label="Source">{card.source}</MetaRow>
+                  <MetaRow label="Captured">{fmtDate(card.createdAt)}</MetaRow>
+                  <MetaRow label="Item ID">
+                    <span className="break-all font-mono text-[11px] text-ink-3">{card.itemId}</span>
+                  </MetaRow>
+                </div>
+              </InspectorSection>
+            </>
+          )}
+        </div>
+
+        {/* Actions stay pinned above the home indicator — the decision is
+            always in thumb reach, never scrolled off. */}
+        <div className="shrink-0 border-t border-hairline bg-surface-1 px-5 pb-[calc(16px+env(safe-area-inset-bottom))] pt-3 md:px-6 md:pb-4">
+          {editing ? (
+            <div className="flex gap-2">
+              <button onClick={onEditCancel} disabled={busy} className={`${BTN_SECONDARY} flex-1`}>
                 Cancel
               </button>
+              <button onClick={save} disabled={busy || !title.trim()} className={`${BTN_PRIMARY} flex-1`}>
+                Save changes
+              </button>
             </div>
-          </div>
-        ) : (
-          <>
-            <h2 className="text-[19px] font-bold leading-snug text-ink">{card.title}</h2>
-            {card.subtitle && <p className="mt-1 text-[13px] text-ink-3 line-through decoration-ink-3/60">{card.subtitle}</p>}
-
-            <div className="mt-3 flex flex-wrap items-center gap-1.5">
-              <TypeChip type={isImport ? (card.newType ?? card.type) : card.type} />
-              {card.priority && <PriorityChip priority={card.priority} />}
-              <StatusChip status={card.status} />
-              {(isImport ? (card.newTags ?? card.tags) : card.tags).map((t) => (
-                <span key={t} className="rounded-full bg-white/[0.06] px-2.5 py-0.5 text-xs font-medium text-ink-2">
-                  #{t}
-                </span>
-              ))}
-            </div>
-
-            {card.proposalKind === "split" && card.parts && card.parts.length > 0 && (
-              <div className="mt-4">
-                <div className="mb-1.5 text-xs font-semibold uppercase tracking-[0.08em] text-ink-3">
-                  Splits into {card.parts.length} items
-                </div>
-                <div className="space-y-2">
-                  {card.parts.map((p, i) => (
-                    <div key={i} className="rounded-control border border-hairline bg-surface-2 p-3">
-                      <div className="flex items-center gap-1.5 text-[13px] font-semibold text-ink">
-                        <TypeChip type={p.type} /> {p.title}
-                      </div>
-                      <p className="mt-1 line-clamp-3 text-[13px] text-ink-2">{p.body}</p>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {isImport && card.reason && (
-              <div className="mt-4 rounded-control border border-dashed border-hairline-2 bg-accent-soft/40 p-3">
-                <div className="mb-1 text-xs font-semibold uppercase tracking-[0.08em] text-accent-text">
-                  AI&apos;s reasoning{card.confidence != null ? ` · ${Math.round(card.confidence * 100)}% confident` : ""}
-                </div>
-                <p className="text-[13px] text-ink-2">{card.reason}</p>
-              </div>
-            )}
-
-            {isImport && card.proposalKind === "retitle" && (
-              <p className="mt-3 text-xs text-ink-3">
-                Multiple topics in here? Full note-splitting runs in the reprocess pipeline — reject and it&apos;ll be
-                reconsidered, or approve and split it manually afterward.
-              </p>
-            )}
-
-            <div className="mt-4">
-              <div className="mb-1.5 text-xs font-semibold uppercase tracking-[0.08em] text-ink-3">
-                {isImport ? "Original memory" : "Full memory"}
-              </div>
-              <p className="whitespace-pre-wrap text-[14px] leading-relaxed text-ink">{card.body}</p>
-            </div>
-
-            {card.raw && card.raw.trim() && card.raw.trim() !== card.body.trim() && (
-              <div className="mt-4">
-                <div className="mb-1.5 text-xs font-semibold uppercase tracking-[0.08em] text-ink-3">Raw text</div>
-                <p className="whitespace-pre-wrap rounded-control bg-surface-2 p-3 text-[13px] leading-relaxed text-ink-2">
-                  {card.raw}
-                </p>
-              </div>
-            )}
-
-            {card.entities.length > 0 && (
-              <div className="mt-4">
-                <div className="mb-1.5 text-xs font-semibold uppercase tracking-[0.08em] text-ink-3">Entities</div>
-                <div className="flex flex-wrap gap-1.5">
-                  {card.entities.map((e, i) => (
-                    <span key={i} className="rounded-full bg-white/[0.06] px-2.5 py-0.5 text-xs text-ink-2">
-                      {e.name} <span className="text-ink-3">· {e.kind}</span>
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {card.links.length > 0 && (
-              <div className="mt-4">
-                <div className="mb-1.5 text-xs font-semibold uppercase tracking-[0.08em] text-ink-3">Similar items</div>
-                <div className="space-y-1.5">
-                  {card.links.map((l) => (
-                    <div key={l.id} className="flex items-center gap-2 rounded-control bg-surface-2 px-3 py-2 text-[13px]">
-                      <TypeChip type={l.type} />
-                      <span className="truncate text-ink-2">{l.title}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            <div className="mt-4 flex items-center justify-between text-xs text-ink-3">
-              <span>
-                {card.source} · {fmtDate(card.createdAt)}
-              </span>
-              {card.dueAt && <span>due {fmtDate(card.dueAt)}</span>}
-            </div>
-
-            <div className="mt-5 flex gap-2">
-              <button
-                onClick={onEditStart}
-                disabled={busy}
-                className="h-10 flex-1 rounded-control bg-white/[0.08] text-[14px] font-semibold text-ink transition disabled:opacity-50"
-              >
+          ) : (
+            <div className="flex gap-2">
+              <button onClick={onEditStart} disabled={busy} className={`${BTN_SECONDARY} flex-1 px-3`}>
                 Edit
               </button>
               <button
                 onClick={() => onCommit("left")}
                 disabled={busy}
-                className="h-10 flex-1 rounded-control text-[14px] font-semibold text-danger transition disabled:opacity-50"
+                className="inline-flex h-11 flex-1 items-center justify-center rounded-control px-3 text-[15px] font-semibold text-danger transition active:scale-[0.98] disabled:pointer-events-none disabled:opacity-40"
                 style={{ background: "rgba(244,154,145,0.14)" }}
               >
                 {isImport ? "Reject" : "Archive"}
               </button>
-              <button
-                onClick={() => onCommit("right")}
-                disabled={busy}
-                className="h-10 flex-1 rounded-control bg-accent text-[14px] font-semibold text-white transition disabled:opacity-50"
-              >
+              <button onClick={() => onCommit("right")} disabled={busy} className={`${BTN_PRIMARY} flex-1 px-3`}>
                 {isImport ? "Approve" : "Keep"}
               </button>
             </div>
-          </>
-        )}
+          )}
+        </div>
       </div>
     </div>
   );

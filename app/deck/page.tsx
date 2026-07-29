@@ -22,8 +22,18 @@ export default async function DeckPage() {
   return (
     <>
       <AppNav />
-      <main className="flex w-full flex-1 flex-col pb-24 md:pb-8">
-        <Suspense fallback={<div className="mx-auto w-full max-w-sm flex-1 px-4 pt-8 text-sm text-ink-3">Loading deck…</div>}>
+      {/* Deck owns its own bottom rhythm — the action row has to clear the tab
+          bar and the home indicator, so it carries the safe-area padding. */}
+      <main className="flex w-full flex-1 flex-col">
+        <Suspense
+          fallback={
+            <div className="obx-safe-x mx-auto w-full max-w-sm flex-1 px-4 pt-4 md:max-w-md md:pt-8">
+              <div className="obx-skeleton mb-2 h-8 w-28 rounded-control" />
+              <div className="obx-skeleton mb-5 h-4 w-56 rounded-full" />
+              <div className="obx-skeleton h-[58vh] max-h-[540px] min-h-[380px] w-full rounded-card" />
+            </div>
+          }
+        >
           <Deck />
         </Suspense>
       </main>

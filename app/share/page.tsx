@@ -43,31 +43,57 @@ function ShareInner() {
   }, [sp]);
 
   return (
-    <main className="mx-auto flex w-full max-w-md flex-1 flex-col items-center justify-center px-4 py-16 text-center">
-      {state === "saving" && <p className="text-sm text-ink-2">🧠 Saving to your brain…</p>}
-      {state === "done" && (
-        <>
-          <p className="text-lg font-semibold">🧠 Saved</p>
-          {detail && <p className="mt-1 text-sm text-ink-2">{detail}</p>}
-        </>
-      )}
-      {state === "empty" && <p className="text-sm text-ink-2">Nothing to save.</p>}
-      {state === "error" && (
-        <>
-          <p className="text-lg font-semibold text-danger">Couldn&apos;t save</p>
-          <p className="mt-1 text-sm text-ink-2">{detail}</p>
-        </>
-      )}
-      <Link href="/" className="mt-6 rounded-control bg-white/[0.08] px-5 py-2.5 text-sm font-semibold text-ink transition hover:bg-white/[0.12]">
-        Open Obsidian-X
-      </Link>
+    <main className="obx-safe-x mx-auto flex w-full max-w-md flex-1 flex-col items-center justify-center px-4 py-16 text-center">
+      <div className="w-full rounded-card border border-hairline bg-surface-1 px-6 py-9">
+        <div className="mx-auto mb-4 flex h-11 w-11 items-center justify-center rounded-control bg-white/[0.06] text-[17px] text-accent-text">
+          {state === "saving" ? <span style={{ animation: "obx-pulse 1.2s infinite" }}>◌</span> : state === "error" ? "!" : "✓"}
+        </div>
+        {state === "saving" && (
+          <>
+            <p className="text-[17px] font-semibold">Saving to your brain…</p>
+            <p className="mt-1 text-[13px] text-ink-2">It&apos;s being titled and filed right now.</p>
+          </>
+        )}
+        {state === "done" && (
+          <>
+            <p className="text-[17px] font-semibold">Saved</p>
+            <p className="mt-1 text-[13px] leading-relaxed text-ink-2">
+              {detail || "It'll show up in tonight's deck."}
+            </p>
+          </>
+        )}
+        {state === "empty" && (
+          <>
+            <p className="text-[17px] font-semibold">Nothing to save</p>
+            <p className="mt-1 text-[13px] text-ink-2">That share didn&apos;t carry any text or link.</p>
+          </>
+        )}
+        {state === "error" && (
+          <>
+            <p className="text-[17px] font-semibold text-danger">Couldn&apos;t save</p>
+            <p className="mt-1 text-[13px] leading-relaxed text-ink-2">{detail}</p>
+          </>
+        )}
+        <Link
+          href="/"
+          className="mt-6 inline-flex h-11 items-center rounded-control bg-white/[0.08] px-5 text-[15px] font-semibold text-ink transition hover:bg-white/[0.12]"
+        >
+          Open Obsidian-X
+        </Link>
+      </div>
     </main>
   );
 }
 
 export default function SharePage() {
   return (
-    <Suspense fallback={<main className="flex flex-1 items-center justify-center p-8 text-sm opacity-60">Loading…</main>}>
+    <Suspense
+      fallback={
+        <main className="flex flex-1 items-center justify-center p-8">
+          <div className="obx-skeleton h-40 w-full max-w-md rounded-card" />
+        </main>
+      }
+    >
       <ShareInner />
     </Suspense>
   );

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { SectionLabel } from "./ui";
+import { CARD, CARD_INSET, FIELD, INPUT, SectionLabel } from "./ui";
 
 type Source = {
   n: number;
@@ -60,34 +60,43 @@ export default function Ask() {
   return (
     <section>
       <SectionLabel className="mb-2.5 px-1">Ask &amp; Draft</SectionLabel>
-      <div className="flex flex-col gap-3.5 rounded-card border border-hairline bg-surface-1 p-4">
-        <div className="flex h-11 items-center gap-2 rounded-control border border-hairline bg-surface-2 px-3.5 transition focus-within:border-accent focus-within:shadow-[0_0_0_3px_rgba(80,107,242,0.25)]">
+      <div className={`flex flex-col gap-3.5 p-4 ${CARD}`}>
+        <div className={`${FIELD} h-12 pr-1.5`}>
           <input
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter") run("answer");
             }}
+            aria-label="Ask your brain, or draft from it"
             placeholder="Ask your brain, or draft from it…"
-            className="w-full bg-transparent text-[15px] text-ink outline-none placeholder:text-ink-3"
+            className={INPUT}
           />
           <button
             onClick={() => run("draft")}
             disabled={busy !== null || !input.trim()}
-            className="shrink-0 text-[13px] font-semibold text-ink-2 transition hover:text-ink disabled:opacity-40"
+            className="inline-flex h-9 shrink-0 items-center rounded-[10px] px-2.5 text-[13px] font-semibold text-ink-2 transition hover:bg-white/[0.06] hover:text-ink disabled:pointer-events-none disabled:opacity-40"
           >
-            {busy === "draft" ? "…" : "✍️ Draft"}
+            {busy === "draft" ? "…" : "Draft"}
           </button>
           <button
             onClick={() => run("answer")}
             disabled={busy !== null || !input.trim()}
-            className="shrink-0 text-[13px] font-semibold text-accent-text transition disabled:opacity-40"
+            className="inline-flex h-9 shrink-0 items-center rounded-[10px] bg-accent-soft px-3 text-[13px] font-semibold text-accent-text transition disabled:pointer-events-none disabled:opacity-40"
           >
             {busy === "ask" ? "…" : "Ask"}
           </button>
         </div>
 
-        {error && <p className="text-sm text-danger">{error}</p>}
+        {busy && (
+          <div className="space-y-2" aria-busy="true">
+            <div className="obx-skeleton h-3.5 w-full rounded-full" />
+            <div className="obx-skeleton h-3.5 w-[86%] rounded-full" />
+            <div className="obx-skeleton h-3.5 w-[62%] rounded-full" />
+          </div>
+        )}
+
+        {error && <p className="text-[13px] text-danger">{error}</p>}
 
         {result && (
           <>
@@ -101,13 +110,13 @@ export default function Ask() {
             )}
             <p
               className={`whitespace-pre-wrap text-[15px] leading-relaxed text-ink ${
-                result.kind === "draft" ? "rounded-control border border-hairline bg-surface-2 p-3.5" : ""
+                result.kind === "draft" ? `${CARD_INSET} p-3.5` : ""
               }`}
             >
               {result.text}
             </p>
             {result.sources.length > 0 && (
-              <div className="flex flex-wrap gap-2">
+              <div className="flex flex-wrap gap-2 border-t border-hairline pt-3">
                 {result.sources.slice(0, 6).map((s) =>
                   s.vault_url ? (
                     <a
@@ -115,16 +124,16 @@ export default function Ask() {
                       href={s.vault_url}
                       target="_blank"
                       rel="noreferrer"
-                      className="inline-flex items-center gap-1.5 rounded-[10px] bg-white/[0.06] px-2.5 py-1.5 text-xs font-semibold text-accent-text transition hover:bg-white/[0.1]"
+                      className="inline-flex min-h-11 max-w-full items-center gap-1.5 truncate rounded-control bg-white/[0.06] px-3 text-[13px] font-semibold text-accent-text transition hover:bg-white/[0.1]"
                     >
                       ↗ {s.title}
                     </a>
                   ) : (
                     <span
                       key={s.id}
-                      className="inline-flex items-center gap-1.5 rounded-[10px] bg-white/[0.06] px-2.5 py-1.5 text-xs font-semibold text-accent-text"
+                      className="inline-flex min-h-11 max-w-full items-center gap-1.5 truncate rounded-control bg-white/[0.06] px-3 text-[13px] font-semibold text-ink-2"
                     >
-                      ↗ {s.title}
+                      {s.title}
                     </span>
                   )
                 )}
