@@ -30,7 +30,25 @@ import {
 // editor. Actions stay pinned to the bottom of the sheet, above the home
 // indicator, so the decision is always thumb-reachable.
 
-const ITEM_TYPES = ["note", "task", "idea", "shopping", "reference", "person", "event"];
+const ITEM_TYPES = ["note", "task", "idea", "shopping", "reference", "person", "event", "memory"];
+
+// v4.0.1 — junk is surfaced, never auto-archived. A score of 8+ is a firm
+// "would be junk"; 5-7 is a softer "possible junk". null / <5 shows nothing.
+function JunkBadge({ score }: { score: number | null }) {
+  if (score == null || score < 5) return null;
+  const firm = score >= 8;
+  const label = firm ? "would be junk" : "possible junk";
+  const color = firm ? "#f49a91" : "#e6c07b";
+  return (
+    <span
+      className="inline-flex items-center gap-1 rounded-control border px-2 py-0.5 text-[11px] font-semibold"
+      style={{ color, borderColor: color, background: "rgba(10,10,13,0.35)" }}
+      title={`Junk score ${score}/10 — your call. Nothing was archived automatically.`}
+    >
+      ⚑ {label} · {score}/10
+    </span>
+  );
+}
 
 type Props = {
   card: DeckCard;
@@ -171,6 +189,7 @@ export default function DeckDetail({ card, mode, editing, busy, onClose, onEditS
                 <TypeChip type={shownType} />
                 {card.priority && <PriorityChip priority={card.priority} />}
                 <StatusChip status={card.status} />
+                <JunkBadge score={card.junkScore} />
                 {shownTags.map((t) => (
                   <Pill key={t}>#{t}</Pill>
                 ))}

@@ -5,6 +5,7 @@ import {
   ENTITY_KINDS,
   TITLE_RULES,
   TITLE_EXAMPLES,
+  TYPE_RULES,
   TAG_RULES,
   SPLIT_RULES,
   JUNK_RULES,
@@ -43,9 +44,10 @@ export type EnrichedItem = {
   confidence?: number;
   needs_review?: boolean;
   review_reason?: string | null;
-  // v4.0 W2 — junk pass (ruthlessness 8/10). 'archive' means the item is stored
-  // archived + tagged 'junk' (reversible, audited); 'review' keeps it and flags
-  // it; 'keep' says nothing. See scoreJunk() in lib/title-standard.mjs.
+  // v4.0.1 — junk pass (ruthlessness 8/10), surfaced not acted on. 'review' keeps
+  // the item and flags it (score 8+ is badged "would be junk" in the deck; 5-7 is
+  // "possible junk"); 'keep' says nothing. Nothing is auto-archived. See
+  // scoreJunk() in lib/title-standard.mjs.
   junk_score?: number;
   junk_verdict?: JunkVerdict;
   junk_reason?: string | null;
@@ -87,6 +89,8 @@ export function buildEnrichSystemPrompt(todayISO: string): string {
     TITLE_RULES,
     ``,
     TITLE_EXAMPLES,
+    ``,
+    TYPE_RULES,
     ``,
     TAG_RULES,
     ``,

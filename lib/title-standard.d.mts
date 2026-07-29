@@ -14,12 +14,14 @@ export type ReprocessPart = {
   tags: string[];
 };
 
-export type JunkVerdict = "archive" | "review" | "keep";
+// v4.0.1: junk is surfaced, never auto-archived — the verdict tops out at "review".
+export type JunkVerdict = "review" | "keep";
 
 export type JunkScore = {
   score: number; // 0..10
   confidence: number; // 0..1, certainty in the SCORE
   verdict: JunkVerdict;
+  wouldArchive: boolean; // display signal: firm "would be junk" (8+ AND confident)
   structuralReason: string | null;
 };
 
@@ -56,6 +58,7 @@ export declare const SYSTEM_TAGS: Set<string>;
 
 export declare const TITLE_RULES: string;
 export declare const TITLE_EXAMPLES: string;
+export declare const TYPE_RULES: string;
 export declare const TAG_RULES: string;
 export declare const CONFIDENCE_RULES: string;
 export declare const SPLIT_RULES: string;

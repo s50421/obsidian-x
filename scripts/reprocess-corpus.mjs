@@ -3,9 +3,11 @@
 // Runs the new v4.0 classification (topic-first title + constrained tags +
 // multi-topic split + junk score) over the EXISTING brain — the 669 archived
 // apple-notes plus the active items — and writes the results as PROPOSALS for
-// the W3 swipe deck to review. Titles are never silently overwritten: the only
-// direct writes are review FLAGS and the junk archive, both audited and both
-// reversible with a single UPDATE.
+// the W3 swipe deck to review. Titles are never silently overwritten, and
+// v4.0.1 NEVER auto-archives junk: a would-be-junk item (score >= 8) is
+// surfaced as a proposal with a "would be junk" badge and its full note, for the
+// owner to retitle/reclassify/keep/archive by hand. The only direct writes are
+// review FLAGS, both audited and reversible with a single UPDATE.
 //
 // Usage:
 //   node --env-file=.env.local scripts/reprocess-corpus.mjs [flags]
@@ -26,10 +28,11 @@
 //
 // OUTCOMES per item:
 //   split           2+ distinct topics  -> 'split' proposal (deck creates the items)
-//   retitle         a better title/type/tags -> 'retitle' proposal
-//   unchanged       the current title already meets the standard -> nothing written
-//   junk_archived   junk score >= 8 and confident -> archived + tag 'junk' + audit
-//   flagged         junk 5-7, or no usable title could be written -> needs_review
+//   retitle         a better title/type/tags, OR would-be-junk (score >= 8) even
+//                   when unchanged -> 'retitle' proposal (carries junkScore so the
+//                   deck badges it "would be junk")
+//   unchanged       title already meets the standard AND not would-be-junk -> nothing
+//   flagged         no usable title could be written -> needs_review (no auto-archive)
 //   error           classification failed -> nothing written, safe to re-run
 
 import {
@@ -84,7 +87,7 @@ const t = {
   splitParts: 0,
   splitCapped: 0,
   unchanged: 0,
-  junkArchived: 0,
+  wouldBeJunk: 0,
   flaggedJunk: 0,
   flaggedTitle: 0,
   lowConfidence: 0,
@@ -102,9 +105,11 @@ let ownerId = null;
 // Per-item decision. Pure given a verdict — the writes below just execute it.
 // ---------------------------------------------------------------------------
 function decide(item, verdict) {
-  if (verdict.junkVerdict === "archive") {
-    return { outcome: "junk_archived", reason: verdict.junkReason ?? "no reusable content" };
-  }
+  // v4.0.1: junk is never auto-archived. A would-be-junk item (score >= 8) is
+  // surfaced for the owner to decide — so it gets a proposal even when its title
+  // already meets the standard, and it carries junkScore so the deck badges it.
+  const wouldBeJunk = verdict.junkScore >= JUNK_ARCHIVE_SCORE;
+
   // No usable title survived the spec. Proposing it would be exactly the
   // half-baked output the v4 laws forbid, so a human is asked instead.
   if (!verdict.title || verdict.titleIssues.length) {
@@ -113,11 +118,12 @@ function decide(item, verdict) {
   if (verdict.parts.length >= 2) return { outcome: "split" };
 
   // Nothing to approve if the item already says exactly this. Not spending a
-  // swipe on a no-op is the difference between a 200-card deck and a 700-card one.
+  // swipe on a no-op is the difference between a 200-card deck and a 700-card one
+  // — UNLESS it's would-be-junk, which the owner has asked to always review.
   const sameTitle = (item.title ?? "").trim() === verdict.title;
   const sameType = (item.type ?? "note") === verdict.type;
   const sameTags = JSON.stringify([...(item.tags ?? [])].sort()) === JSON.stringify([...verdict.tags].sort());
-  if (sameTitle && sameType && sameTags) return { outcome: "unchanged" };
+  if (sameTitle && sameType && sameTags && !wouldBeJunk) return { outcome: "unchanged" };
   return { outcome: "retitle" };
 }
 
@@ -153,34 +159,6 @@ async function flagItem(item, reason) {
     t.writeErrors++;
     if (errorSamples.length < 10) errorSamples.push(`${item.id} flag: ${error.message}`);
   }
-}
-
-async function archiveAsJunk(item, verdict) {
-  const tags = [...new Set([...(item.tags ?? []), "junk"])];
-  const { error } = await admin
-    .from("items")
-    .update({ status: "archived", tags })
-    .eq("id", item.id)
-    .eq("user_id", item.user_id);
-  if (error) {
-    t.writeErrors++;
-    if (errorSamples.length < 10) errorSamples.push(`${item.id} junk: ${error.message}`);
-    return;
-  }
-  await admin.from("audit").insert({
-    user_id: item.user_id,
-    item_id: item.id,
-    action: "junk_archived",
-    actor: "system",
-    detail: {
-      junk_score: verdict.junkScore,
-      junk_reason: verdict.junkReason,
-      ruthlessness: JUNK_ARCHIVE_SCORE,
-      previous_status: item.status,
-      previous_tags: item.tags ?? [],
-      pass: "reprocess",
-    },
-  });
 }
 
 // One row per item handled, so a re-run knows not to pay for it twice — and so
@@ -231,21 +209,18 @@ async function handle(item) {
   const decision = decide(item, verdict);
   if (verdict.confidence < CONFIDENCE_BAR) t.lowConfidence++;
   if (verdict.splitCapped) t.splitCapped++;
+  if (verdict.junkScore >= JUNK_ARCHIVE_SCORE) {
+    t.wouldBeJunk++;
+    if (samples.length < 8) samples.push(["JUNK?", item, verdict]);
+  }
 
-  // Junk 5-7 (or 8+ with doubt): the item is KEPT and flagged. This is a flag,
-  // never a content change, so it is written directly rather than proposed.
+  // Junk 5-7 (or 8+): the item is KEPT and flagged. This is a flag, never a
+  // content change, so it is written directly rather than proposed. Would-be-junk
+  // (8+) additionally always gets a proposal (see decide()) so it surfaces in the
+  // deck with its full note for the owner to retitle, reclassify, keep or archive.
   const possibleJunk = verdict.junkVerdict === "review";
 
   switch (decision.outcome) {
-    case "junk_archived": {
-      t.junkArchived++;
-      if (samples.length < 8) samples.push(["JUNK", item, verdict]);
-      if (RUN) {
-        await archiveAsJunk(item, verdict);
-        await auditPass(item, verdict, decision);
-      }
-      return;
-    }
     case "flagged_title": {
       t.flaggedTitle++;
       if (RUN) {
@@ -346,7 +321,7 @@ async function drain() {
   t.scanned += todo.length;
   const secs = ((Date.now() - started) / 1000).toFixed(0);
   console.log(
-    `  … ${t.scanned} handled  (retitle ${t.retitle}, split ${t.split}, junk ${t.junkArchived}, unchanged ${t.unchanged}, err ${t.errors})  ${secs}s`
+    `  … ${t.scanned} handled  (retitle ${t.retitle}, split ${t.split}, junk? ${t.wouldBeJunk}, unchanged ${t.unchanged}, err ${t.errors})  ${secs}s`
   );
 }
 
@@ -406,8 +381,8 @@ console.log(`proposals — retitle: ${t.retitle}`);
 console.log(`proposals — split:   ${t.split}  (${t.splitParts} parts total${t.splitCapped ? `, ${t.splitCapped} capped at ${MAX_SPLIT_PARTS}` : ""})`);
 console.log(`unchanged:           ${t.unchanged} (title already met the standard)`);
 console.log("");
-console.log(`junk archived:       ${t.junkArchived}  (score >= ${JUNK_ARCHIVE_SCORE}, confident — tagged 'junk', reversible)`);
-console.log(`flagged possible-junk:${String(t.flaggedJunk).padStart(4)}  (score ${JUNK_REVIEW_SCORE}-${JUNK_ARCHIVE_SCORE - 1} or unsure — kept)`);
+console.log(`would-be junk:       ${t.wouldBeJunk}  (score >= ${JUNK_ARCHIVE_SCORE} — surfaced as a proposal with a badge, NEVER auto-archived)`);
+console.log(`flagged possible-junk:${String(t.flaggedJunk).padStart(4)}  (score ${JUNK_REVIEW_SCORE}-${JUNK_ARCHIVE_SCORE - 1} or unsure — kept + flagged)`);
 console.log(`flagged no-title:    ${t.flaggedTitle}  (classifier could not meet the spec)`);
 console.log(`low confidence:      ${t.lowConfidence} (< ${CONFIDENCE_BAR})`);
 console.log(`errors:              ${t.errors}`);

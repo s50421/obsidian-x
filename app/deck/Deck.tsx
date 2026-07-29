@@ -125,6 +125,18 @@ function CardFront({ card, mode }: { card: DeckCard; mode: Mode }) {
         <div className="mt-3.5 flex flex-wrap items-center gap-1.5">
           <TypeChip type={displayType} />
           {card.priority && <PriorityChip priority={card.priority} />}
+          {card.junkScore != null && card.junkScore >= 5 && (
+            <span
+              className="inline-flex items-center gap-1 rounded-control border px-2 py-0.5 text-[11px] font-semibold"
+              style={{
+                color: card.junkScore >= 8 ? "#f49a91" : "#e6c07b",
+                borderColor: card.junkScore >= 8 ? "#f49a91" : "#e6c07b",
+                background: "rgba(10,10,13,0.35)",
+              }}
+            >
+              ⚑ {card.junkScore >= 8 ? "would be junk" : "possible junk"}
+            </span>
+          )}
           {displayTags.slice(0, 4).map((t) => (
             <Pill key={t}>#{t}</Pill>
           ))}

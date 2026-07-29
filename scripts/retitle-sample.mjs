@@ -153,8 +153,8 @@ for (const r of rows) {
   const issues = v.title ? titleQualityIssues(v.title, r.item.body ?? "") : ["empty"];
   const bad = issues.length > 0;
   if (bad) unusable++;
-  if (v.junkVerdict === "archive") junkArchive++;
-  if (v.junkVerdict === "review") junkReview++;
+  if (v.junkScore >= JUNK_ARCHIVE_SCORE) junkArchive++;
+  else if (v.junkScore >= JUNK_REVIEW_SCORE) junkReview++;
   if (v.parts.length >= 2) splits++;
   if (v.confidence < CONFIDENCE_BAR) lowConf++;
 
@@ -177,8 +177,8 @@ console.log("");
 console.log(`sampled:          ${rows.length}`);
 console.log(`UNUSABLE titles:  ${unusable}   <- KPI #4 target is 0`);
 console.log(`would split:      ${splits}`);
-console.log(`junk >= ${JUNK_ARCHIVE_SCORE} (archive): ${junkArchive}`);
-console.log(`junk ${JUNK_REVIEW_SCORE}-${JUNK_ARCHIVE_SCORE - 1} (flag):     ${junkReview}`);
+console.log(`would-be junk >= ${JUNK_ARCHIVE_SCORE}: ${junkArchive}  (surfaced with a badge, never auto-archived)`);
+console.log(`possible junk ${JUNK_REVIEW_SCORE}-${JUNK_ARCHIVE_SCORE - 1}:  ${junkReview}`);
 console.log(`low confidence:   ${lowConf} (< ${CONFIDENCE_BAR})`);
 console.log(`classify failures:${String(failures).padStart(3)}`);
 console.log(`title cap:        ${TITLE_MAX} chars`);

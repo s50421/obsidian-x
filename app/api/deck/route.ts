@@ -40,6 +40,9 @@ export type DeckCard = {
   entities: { name: string; kind: string }[];
   links: LinkPreview[];
   dueAt: string | null;
+  // junk pass (v4.0.1) — surfaced, never auto-archived. 0..10, or null. The
+  // client badges >= 8 as "would be junk", 5-7 as "possible junk".
+  junkScore: number | null;
   // import-only
   proposalKind: "retitle" | "split" | null;
   reason: string | null;
@@ -89,6 +92,7 @@ type ItemRow = {
   links: string[] | null;
   due_at: string | null;
   entities: { name: string; kind: string }[] | null;
+  junk_score: number | null;
   created_at: string;
 };
 
@@ -105,7 +109,7 @@ async function fetchTodayCandidates(
   const { start, end } = localDayBoundsUtc(tz, todayStr);
   const { data } = await admin
     .from("items")
-    .select("id,type,title,body,raw,status,priority,tags,source,links,due_at,entities,created_at")
+    .select("id,type,title,body,raw,status,priority,tags,source,links,due_at,entities,junk_score,created_at")
     .eq("user_id", userId)
     .neq("source", "system")
     .gte("created_at", start)
@@ -199,6 +203,7 @@ async function handleDaily(admin: SupabaseClient, userId: string, cursorRaw: str
     entities: i.entities ?? [],
     links: (i.links ?? []).map((id) => linkPreviews.get(id)).filter((x): x is LinkPreview => !!x),
     dueAt: i.due_at,
+    junkScore: typeof i.junk_score === "number" ? i.junk_score : null,
     proposalKind: null,
     reason: null,
     confidence: null,
@@ -230,6 +235,7 @@ type RetitlePayload = {
   entities?: { name: string; kind: string }[];
   confidence?: number;
   reason?: string;
+  junkScore?: number;
 };
 
 type SplitPart = { title: string; body: string; type: string; tags: string[] };
@@ -239,6 +245,7 @@ type SplitPayload = {
   parts?: SplitPart[];
   confidence?: number;
   reason?: string;
+  junkScore?: number;
 };
 
 type ProposalRow = {
@@ -286,7 +293,7 @@ async function handleImport(admin: SupabaseClient, userId: string, cursorRaw: st
   if (itemIds.length) {
     const { data: itemRows } = await admin
       .from("items")
-      .select("id,type,title,body,raw,status,priority,tags,source,links,due_at,entities,created_at")
+      .select("id,type,title,body,raw,status,priority,tags,source,links,due_at,entities,junk_score,created_at")
       .eq("user_id", userId)
       .in("id", itemIds);
     for (const r of (itemRows ?? []) as ItemRow[]) itemsById.set(r.id, r);
@@ -323,6 +330,12 @@ async function handleImport(admin: SupabaseClient, userId: string, cursorRaw: st
         entities: (isSplit ? item.entities : payload.entities ?? item.entities) ?? [],
         links: (item.links ?? []).map((id) => linkPreviews.get(id)).filter((x): x is LinkPreview => !!x),
         dueAt: isSplit ? item.due_at : (payload.dueAt ?? item.due_at ?? null),
+        junkScore:
+          typeof payload.junkScore === "number"
+            ? payload.junkScore
+            : typeof item.junk_score === "number"
+              ? item.junk_score
+              : null,
         proposalKind: isSplit ? "split" : "retitle",
         reason: payload.reason ?? null,
         confidence: typeof payload.confidence === "number" ? payload.confidence : null,

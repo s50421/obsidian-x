@@ -9,10 +9,10 @@
 //   • a fake OpenRouter that returns canned classifications per item.
 //
 // Then it runs the REAL script in --run mode and asserts on every write it
-// made: which proposals were created and with what payload, which items were
-// archived as junk, which were flagged, and that a second pass is a no-op
-// (resumability). This is the closest thing to a live rehearsal we can get
-// before David runs it on his Mac.
+// made: which proposals were created and with what payload, that would-be-junk
+// is surfaced (never auto-archived, v4.0.1), which items were flagged, and that
+// a second pass is a no-op (resumability). This is the closest thing to a live
+// rehearsal we can get before David runs it on his Mac.
 
 import assert from "node:assert/strict";
 import http from "node:http";
@@ -361,7 +361,9 @@ check("the raw first line went to the model, not just the title", () => {
 
 check("retitle proposals were written with the deck's payload contract", () => {
   const retitles = writes.proposals.filter((p) => p.kind === "retitle");
-  assert.equal(retitles.length, 3, `got ${retitles.length}`); // items 001, 002, 006
+  // 001, 002, 006 changed title; 003, 004 are would-be-junk and are surfaced as
+  // proposals too (v4.0.1: junk is shown, not archived).
+  assert.equal(retitles.length, 5, `got ${retitles.length}`);
   const f9 = retitles.find((p) => p.payload.itemId.endsWith("001"));
   assert.equal(f9.status, "pending");
   assert.equal(f9.source, "reprocess");
@@ -390,22 +392,23 @@ check("the 3-topic braindump became a split proposal with 3 parts", () => {
   assert.deepEqual(split[0].payload.parts[1].tags, ["finance", "v-bank"], "1 free-form tag survives the taxonomy");
 });
 
-check("confident junk was archived + tagged, and audited so it is reversible", () => {
+check("v4.0.1: confident junk was NOT auto-archived — nothing tagged 'junk'", () => {
   const junked = db.items.filter((i) => (i.tags ?? []).includes("junk"));
-  assert.deepEqual(junked.map((i) => i.id.slice(-3)).sort(), ["003", "004"]);
-  for (const i of junked) assert.equal(i.status, "archived");
-  const entries = writes.audit.filter((a) => a.action === "junk_archived");
-  assert.equal(entries.length, 2);
-  assert.ok(entries.every((e) => typeof e.detail.junk_score === "number"));
-  assert.ok(entries.every((e) => e.detail.previous_status && Array.isArray(e.detail.previous_tags)));
-  assert.equal(entries.every((e) => e.detail.ruthlessness === 8), true);
+  assert.equal(junked.length, 0, "no item is auto-tagged 'junk' anymore");
+  assert.equal(
+    writes.audit.filter((a) => a.action === "junk_archived").length,
+    0,
+    "no junk_archived audit rows — nothing was archived automatically"
+  );
 });
 
-check("junk items got NO proposal — a swipe is not spent on them", () => {
-  for (const p of writes.proposals) {
-    assert.ok(!p.payload.itemId.endsWith("003"));
-    assert.ok(!p.payload.itemId.endsWith("004"));
-  }
+check("would-be-junk items ARE surfaced as proposals carrying junkScore (deck badges them)", () => {
+  const p3 = writes.proposals.find((p) => p.payload.itemId.endsWith("003"));
+  const p4 = writes.proposals.find((p) => p.payload.itemId.endsWith("004"));
+  assert.ok(p3, "item 003 (junk 9) got a proposal so the owner can decide");
+  assert.ok(p4, "item 004 (junk 10) got a proposal so the owner can decide");
+  assert.equal(p3.payload.junkScore, 9);
+  assert.equal(p4.payload.junkScore, 10);
 });
 
 check("uncertain junk (score 6) was KEPT, flagged 'possible-junk', and still proposed", () => {
@@ -442,9 +445,9 @@ check("the run's spend was recorded", () => {
 
 check("the summary reported what it did", () => {
   const out = log.join("\n");
-  assert.match(out, /proposals — retitle: 3/);
+  assert.match(out, /proposals — retitle: 5/);
   assert.match(out, /proposals — split:   1/);
-  assert.match(out, /junk archived:       2/);
+  assert.match(out, /would-be junk:       2/);
 });
 
 // --- second pass: nothing left to do ---------------------------------------

@@ -6,7 +6,7 @@ import { logAudit } from "@/lib/audit";
 import { logLlmUsage } from "@/lib/usage";
 import { detectSensitive } from "@/lib/sensitivity";
 import { reprojectItemToVault } from "@/lib/vault-sync";
-import { cleanTitle, CONFIDENCE_BAR, JUNK_ARCHIVE_SCORE, scoreJunk } from "@/lib/title-standard.mjs";
+import { cleanTitle, CONFIDENCE_BAR, scoreJunk } from "@/lib/title-standard.mjs";
 
 // Similarity thresholds (cosine, 0..1) against `items.embedding_v2`
 // (text-embedding-3-large @ 1024 dims via match_neighbors_v2).
@@ -125,15 +125,12 @@ export async function storeEnrichedItem(
   const createdAt = new Date().toISOString();
   const dueAt = it.due_date ? new Date(`${it.due_date}T09:00:00Z`).toISOString() : null;
 
-  // v4.0 W2 — junk pass at ruthlessness 8/10. A confident 8+ lands ARCHIVED and
-  // tagged 'junk' (so it never reaches the daily deck or the brief) with a
-  // `junk_archived` audit entry carrying the score — one UPDATE reverses it.
-  // 5-7, or 8+ with any doubt, stays open and flagged 'possible-junk'.
-  // Nothing is ever deleted.
-  const junked = it.junk_verdict === "archive";
-  const status = junked ? "archived" : "open";
-  const tags = junked ? [...new Set([...it.tags, "junk"])] : it.tags;
-
+  // v4.0.1 — junk pass at ruthlessness 8/10 is SURFACED, never acted on. A live
+  // capture is always kept OPEN; a would-be-junk item (junk_score >= 8) is simply
+  // flagged (sanitizeEnrichItem sets review_reason "would be junk — your call")
+  // and stored with its junk_score, so it lands in the daily deck with a "would
+  // be junk" badge and the full note. The owner archives/retitles/reclassifies it
+  // by hand — the pipeline decides nothing.
   const { data: item, error } = await admin
     .from("items")
     .insert({
@@ -142,9 +139,9 @@ export async function storeEnrichedItem(
       title: it.title,
       body: it.body,
       raw: rawText,
-      status,
+      status: "open",
       priority: it.priority,
-      tags,
+      tags: it.tags,
       source,
       sensitive,
       embedding_v2: embedding,
@@ -154,6 +151,7 @@ export async function storeEnrichedItem(
       confidence: itemConfidence,
       needs_review: needsReview,
       review_reason: reviewReason,
+      junk_score: it.junk_score ?? null,
       entities: it.entities,
       links: links.map((l) => l.id),
       dup_candidate: dup?.id ?? null,
@@ -202,26 +200,15 @@ export async function storeEnrichedItem(
     item_id: item.id,
     action,
     actor: source === "email" ? "email" : "user",
-    detail: { type: item.type, source, sensitive, needs_review: needsReview, split },
+    detail: {
+      type: item.type,
+      source,
+      sensitive,
+      needs_review: needsReview,
+      split,
+      junk_score: it.junk_score ?? null,
+    },
   });
-
-  // Separate, greppable entry for the junk pass — this is the row that makes
-  // auto-archiving reversible and auditable ("show me what it threw away").
-  if (junked) {
-    await logAudit(admin, {
-      user_id: userId,
-      item_id: item.id,
-      action: "junk_archived",
-      actor: "system",
-      detail: {
-        junk_score: it.junk_score ?? null,
-        junk_reason: it.junk_reason ?? null,
-        ruthlessness: JUNK_ARCHIVE_SCORE,
-        previous_status: "open",
-        source,
-      },
-    });
-  }
 
   return {
     item,
@@ -274,11 +261,8 @@ export async function captureText(
         due_date: null,
         entities: [],
         confidence: 1,
-        needs_review: junk.verdict !== "archive",
-        review_reason:
-          junk.verdict === "archive"
-            ? null
-            : "private note — titled locally, not by the model",
+        needs_review: true,
+        review_reason: "private note — titled locally, not by the model",
         junk_score: junk.score,
         junk_verdict: junk.verdict,
         junk_reason: junk.structuralReason,

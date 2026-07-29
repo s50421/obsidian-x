@@ -199,25 +199,31 @@ test("uncertain splits collapse back to one flagged item (no half-baked memories
 });
 
 // ---------------------------------------------------------------------------
-test("junk paths: 8+ archives, 5-7 flags, <5 says nothing", async (t) => {
+test("junk paths (v4.0.1): surfaced, never auto-archived", async (t) => {
   const prose = "Marcus confirmed the roof repair quote at 4,200 CHF and will send the contract on Monday.";
 
-  await t.test("score 9, confident -> archive", () => {
+  await t.test("score 9, confident -> review + wouldArchive (never 'archive')", () => {
     const j = scoreJunk({ modelScore: 9, modelConfidence: 0.9, title: "Scratch", body: prose });
     assert.equal(j.score, 9);
-    assert.equal(j.verdict, "archive");
+    assert.equal(j.verdict, "review");
+    assert.equal(j.wouldArchive, true);
   });
 
-  await t.test("score 8 is the ruthlessness bar itself", () => {
-    assert.equal(scoreJunk({ modelScore: 8, modelConfidence: 0.8, title: "t", body: prose }).verdict, "archive");
-    assert.equal(scoreJunk({ modelScore: 7, modelConfidence: 0.9, title: "t", body: prose }).verdict, "review");
+  await t.test("score 8 is the would-be-junk bar; the verdict tops out at review", () => {
+    const j8 = scoreJunk({ modelScore: 8, modelConfidence: 0.8, title: "t", body: prose });
+    assert.equal(j8.verdict, "review");
+    assert.equal(j8.wouldArchive, true);
+    const j7 = scoreJunk({ modelScore: 7, modelConfidence: 0.9, title: "t", body: prose });
+    assert.equal(j7.verdict, "review");
+    assert.equal(j7.wouldArchive, false);
     assert.equal(JUNK_ARCHIVE_SCORE, 8);
   });
 
-  await t.test("5-7 -> review (kept + flagged), never archived", () => {
+  await t.test("5-7 -> review (kept + flagged), not would-be-junk", () => {
     for (const s of [5, 6, 7]) {
       const j = scoreJunk({ modelScore: s, modelConfidence: 0.95, title: "t", body: prose });
       assert.equal(j.verdict, "review", `score ${s}`);
+      assert.equal(j.wouldArchive, false, `score ${s}`);
     }
   });
 
@@ -227,24 +233,32 @@ test("junk paths: 8+ archives, 5-7 flags, <5 says nothing", async (t) => {
     }
   });
 
-  await t.test("8+ but UNSURE is demoted to review — never discard on a guess", () => {
+  await t.test("8+ but UNSURE is a soft possible-junk — never discard on a guess", () => {
     const j = scoreJunk({ modelScore: 10, modelConfidence: 0.5, title: "t", body: prose });
     assert.equal(j.score, 10);
     assert.equal(j.verdict, "review");
+    assert.equal(j.wouldArchive, false, "low confidence -> not a firm would-be-junk");
   });
 
-  await t.test("no model at all -> only CERTAIN structural junk can archive", () => {
-    assert.equal(scoreJunk({ modelScore: null, title: "", body: "" }).verdict, "archive"); // empty
-    assert.equal(scoreJunk({ modelScore: null, title: "test", body: "test" }).verdict, "archive"); // test string
+  await t.test("no model at all -> CERTAIN structural junk is review + wouldArchive", () => {
+    const empty = scoreJunk({ modelScore: null, title: "", body: "" });
+    assert.equal(empty.verdict, "review");
+    assert.equal(empty.wouldArchive, true); // empty
+    const testStr = scoreJunk({ modelScore: null, title: "test", body: "test" });
+    assert.equal(testStr.verdict, "review");
+    assert.equal(testStr.wouldArchive, true); // test string
     assert.equal(scoreJunk({ modelScore: null, title: "Roof", body: prose }).verdict, "keep");
-    // Structural-but-uncertain can only ever reach 'review' without a model.
-    assert.equal(scoreJunk({ modelScore: null, title: "", body: "1,200,000 = 0.5 x sell" }).verdict, "review");
+    // Structural-but-uncertain reaches 'review' but never a firm would-be-junk.
+    const nn = scoreJunk({ modelScore: null, title: "", body: "1,200,000 = 0.5 x sell" });
+    assert.equal(nn.verdict, "review");
+    assert.equal(nn.wouldArchive, false);
   });
 
   await t.test("structure overrules a model that says an empty note is fine", () => {
     const j = scoreJunk({ modelScore: 0, modelConfidence: 1, title: "", body: "   " });
     assert.equal(j.score, 10, "a certain structural verdict wins outright");
-    assert.equal(j.verdict, "archive");
+    assert.equal(j.verdict, "review");
+    assert.equal(j.wouldArchive, true);
     assert.equal(j.structuralReason, "empty");
   });
 
@@ -272,14 +286,14 @@ test("junk paths: 8+ archives, 5-7 flags, <5 says nothing", async (t) => {
     assert.equal(structuralJunkScore("Dr Weber", "Call Dr Weber back about the follow-up").reason, null);
   });
 
-  await t.test("enrich: an archived-as-junk item is decided, not also queued for review", () => {
+  await t.test("enrich: a would-be-junk item is KEPT and flagged, never decided", () => {
     const r = parseEnrichPayload(
       { confidence: 0.9, items: [{ title: "Scratch numbers — no context", body: "0.5 x 1.2 x 0.47", junk_score: 9, confidence: 0.9 }] },
       "0.5 x 1.2 x 0.47"
     );
-    assert.equal(r.items[0].junk_verdict, "archive");
-    assert.equal(r.items[0].needs_review, false);
-    assert.equal(r.items[0].review_reason, null);
+    assert.equal(r.items[0].junk_verdict, "review");
+    assert.equal(r.items[0].needs_review, true);
+    assert.equal(r.items[0].review_reason, "would be junk — your call");
   });
 
   await t.test("enrich: a 5-7 item is kept and flagged 'possible-junk'", () => {
@@ -298,9 +312,9 @@ test("junk paths: 8+ archives, 5-7 flags, <5 says nothing", async (t) => {
       item({ body: "1,200,000 = 0.5 x sell + 0.5 x sell x 0.47" })
     );
     assert.equal(v.junkScore, 9);
-    assert.equal(v.junkVerdict, "archive");
+    assert.equal(v.junkVerdict, "review");
     assert.equal(v.junkReason, "unlabelled arithmetic");
-    assert.equal(v.title, "Deal payout math — 1.2M split scenario", "junk still gets a real title — archived items are still browsed");
+    assert.equal(v.title, "Deal payout math — 1.2M split scenario", "junk still gets a real title — flagged items are still browsed");
   });
 });
 
@@ -417,7 +431,7 @@ test("proposal payloads match the contract the swipe deck reads", async (t) => {
     );
     const p = buildRetitlePayload(src, v);
     assert.deepEqual(Object.keys(p).sort(), [
-      "confidence", "dueAt", "entities", "itemId", "junkScore",
+      "confidence", "dueAt", "entities", "itemId", "junkReason", "junkScore",
       "newTags", "newTitle", "newType", "oldTitle", "reason",
     ]);
     assert.equal(p.itemId, src.id);
@@ -443,7 +457,7 @@ test("proposal payloads match the contract the swipe deck reads", async (t) => {
       src
     );
     const p = buildSplitPayload(src, v);
-    assert.deepEqual(Object.keys(p).sort(), ["confidence", "itemId", "junkScore", "oldTitle", "parts", "reason"]);
+    assert.deepEqual(Object.keys(p).sort(), ["confidence", "itemId", "junkReason", "junkScore", "oldTitle", "parts", "reason"]);
     assert.equal(p.parts.length, 2);
     assert.deepEqual(Object.keys(p.parts[0]).sort(), ["body", "tags", "title", "type"]);
     assert.equal(p.parts[1].type, "task");

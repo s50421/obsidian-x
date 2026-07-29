@@ -24,7 +24,7 @@ export const dynamic = "force-dynamic";
 // returned (the client echoes it back verbatim as `edits.undo` on the follow-up
 // call) — a 5s toast window on the client, not a time limit enforced here.
 
-const ITEM_TYPES = ["note", "task", "idea", "shopping", "reference", "person", "event"];
+const ITEM_TYPES = ["note", "task", "idea", "shopping", "reference", "person", "event", "memory"];
 const PRIORITIES = ["low", "medium", "high"];
 
 type Mode = "daily" | "import";
