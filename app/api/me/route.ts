@@ -2,12 +2,19 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { isOwner } from "@/lib/owner";
+import { resolveOwnerTz } from "@/lib/tz";
+import { countDailyUnreviewed, countPendingImportProposals } from "@/app/api/deck/route";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 // Lightweight identity + badge feed for the shared nav (email + pending-approvals
-// count). Owner-authed via the session cookie, like the other page-facing routes.
+// count + the deck badge). Owner-authed via the session cookie, like the other
+// page-facing routes.
+//
+// `deckPending` (v4.0 W3) = today's un-swiped daily-deck items + pending
+// import (retitle/split) proposals — the same two counts the evening nudge
+// cron uses, so the nav badge and the Telegram nudge always agree.
 export async function GET() {
   const supabase = await createClient();
   const {
@@ -24,5 +31,17 @@ export async function GET() {
     .eq("user_id", user.id)
     .eq("status", "pending");
 
-  return NextResponse.json({ email: user.email, pending: count ?? 0 });
+  let deckPending = 0;
+  try {
+    const tz = await resolveOwnerTz(admin, user.id);
+    const [{ remaining }, importPending] = await Promise.all([
+      countDailyUnreviewed(admin, user.id, tz),
+      countPendingImportProposals(admin, user.id),
+    ]);
+    deckPending = remaining + importPending;
+  } catch {
+    // never let the nav badge feed break the rest of /api/me
+  }
+
+  return NextResponse.json({ email: user.email, pending: count ?? 0, deckPending });
 }

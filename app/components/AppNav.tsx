@@ -9,20 +9,21 @@ import { usePathname } from "next/navigation";
 // "More"). Self-sufficient — fetches the owner email + pending-approvals badge
 // from /api/me, so every page just drops in <AppNav />.
 
-const LINKS: { href: string; label: string; badge?: boolean }[] = [
+const LINKS: { href: string; label: string; badge?: "approvals" | "deck" }[] = [
   { href: "/", label: "Home" },
+  { href: "/deck", label: "Deck", badge: "deck" },
   { href: "/graph", label: "Graph" },
   { href: "/interview", label: "Interview" },
   { href: "/imports", label: "Imports" },
-  { href: "/approvals", label: "Approvals", badge: true },
+  { href: "/approvals", label: "Approvals", badge: "approvals" },
   { href: "/ops", label: "Ops" },
 ];
 
-const TABS: { href: string; label: string; icon: string; badge?: boolean }[] = [
+const TABS: { href: string; label: string; icon: string; badge?: "approvals" | "deck" }[] = [
   { href: "/", label: "Home", icon: "⌂" },
+  { href: "/deck", label: "Deck", icon: "🃏", badge: "deck" },
   { href: "/graph", label: "Graph", icon: "◎" },
-  { href: "/interview", label: "Interview", icon: "✎" },
-  { href: "/approvals", label: "Approvals", icon: "✓", badge: true },
+  { href: "/approvals", label: "Approvals", icon: "✓", badge: "approvals" },
 ];
 
 function Badge({ n }: { n: number }) {
@@ -48,6 +49,7 @@ export default function AppNav({ hideMobileBar = false }: { hideMobileBar?: bool
   const pathname = usePathname();
   const [email, setEmail] = useState("");
   const [pending, setPending] = useState(0);
+  const [deckPending, setDeckPending] = useState(0);
   const [moreOpen, setMoreOpen] = useState(false);
 
   useEffect(() => {
@@ -58,6 +60,7 @@ export default function AppNav({ hideMobileBar = false }: { hideMobileBar?: bool
         if (alive && d) {
           setEmail(d.email ?? "");
           setPending(d.pending ?? 0);
+          setDeckPending(d.deckPending ?? 0);
         }
       })
       .catch(() => {});
@@ -70,7 +73,8 @@ export default function AppNav({ hideMobileBar = false }: { hideMobileBar?: bool
   useEffect(() => setMoreOpen(false), [pathname]);
 
   const isActive = (href: string) => (href === "/" ? pathname === "/" : pathname === href);
-  const moreActive = pathname === "/imports" || pathname === "/ops";
+  const moreActive = pathname === "/imports" || pathname === "/ops" || pathname === "/interview";
+  const badgeCount = (kind?: "approvals" | "deck") => (kind === "deck" ? deckPending : kind === "approvals" ? pending : 0);
 
   return (
     <>
@@ -93,7 +97,7 @@ export default function AppNav({ hideMobileBar = false }: { hideMobileBar?: bool
                   }`}
                 >
                   {l.label}
-                  {l.badge && <Badge n={pending} />}
+                  {l.badge && <Badge n={badgeCount(l.badge)} />}
                 </Link>
               ))}
             </nav>
@@ -112,6 +116,14 @@ export default function AppNav({ hideMobileBar = false }: { hideMobileBar?: bool
             className="absolute inset-x-3 bottom-[calc(72px+env(safe-area-inset-bottom))] rounded-card border border-hairline-2 bg-material-2 p-2 shadow-[0_16px_48px_rgba(0,0,0,0.5)] backdrop-blur-[20px]"
             onClick={(e) => e.stopPropagation()}
           >
+            <Link
+              href="/interview"
+              className={`block rounded-control px-4 py-3 text-[15px] ${
+                pathname === "/interview" ? "bg-white/[0.08] font-semibold text-ink" : "text-ink"
+              }`}
+            >
+              Interview
+            </Link>
             <Link
               href="/imports"
               className={`block rounded-control px-4 py-3 text-[15px] ${
@@ -148,9 +160,9 @@ export default function AppNav({ hideMobileBar = false }: { hideMobileBar?: bool
             >
               <span className="text-xl leading-none">{t.icon}</span>
               <span className="text-[10px] font-semibold">{t.label}</span>
-              {t.badge && pending > 0 && (
+              {t.badge && badgeCount(t.badge) > 0 && (
                 <span className="absolute right-[24%] top-[-3px]">
-                  <Badge n={pending} />
+                  <Badge n={badgeCount(t.badge)} />
                 </span>
               )}
             </Link>
