@@ -2,14 +2,20 @@ name: cron pinger (tz-adaptive brief + deck nudge)
 
 # Why this exists:
 #   Vercel's Hobby (free) plan rejects any cron that runs more than once per day,
-#   so the two timezone-gated endpoints can't be scheduled natively in vercel.json:
-#     - /api/cron/brief      -> morning letter, self-gated to 06:15-07:15 LOCAL
-#     - /api/cron/deck-nudge -> evening nudge,  self-gated to 20:45-21:45 LOCAL
-#   Both re-resolve the owner's current timezone on every hit and are idempotent
-#   (a `*_sent` audit marker keyed on the owner's LOCAL date means only the first
-#   in-window hit of the day actually sends). Firing every 15 min is therefore
-#   safe and delay-tolerant: it just guarantees a tick lands inside each local
-#   window even when GitHub's scheduler lags. Every out-of-window hit exits fast.
+#   so the sub-daily endpoints can't be scheduled natively in vercel.json:
+#     - /api/cron/brief       -> morning letter, self-gated to 06:15-07:15 LOCAL
+#     - /api/cron/deck-nudge  -> evening nudge,  self-gated to 20:45-21:45 LOCAL
+#     - /api/cron/gmail-sync  -> v4.1 Gmail inflow, incremental + idempotent
+#   The two tz-gated ones re-resolve the owner's current timezone on every hit
+#   and are idempotent (a `*_sent` audit marker keyed on the owner's LOCAL date
+#   means only the first in-window hit of the day actually sends). Firing every
+#   15 min is therefore safe and delay-tolerant: it just guarantees a tick lands
+#   inside each local window even when GitHub's scheduler lags. Every
+#   out-of-window hit exits fast.
+#
+#   gmail-sync is not tz-gated — it runs on every tick. It is cheap when idle:
+#   the Gmail History API returns an empty delta and the handler exits, and the
+#   unique index on (user_id, source, external_id) makes any overlap a no-op.
 #
 # Auth: endpoints require `Authorization: Bearer $CRON_SECRET` (lib/cron.ts).
 #   CRON_SECRET must be added as an Actions repo secret
@@ -39,7 +45,7 @@ jobs:
             echo "::warning::CRON_SECRET secret not set yet — skipping. Add it in Settings > Secrets and variables > Actions to activate the pinger."
             exit 0
           fi
-          for path in /api/cron/brief /api/cron/deck-nudge; do
+          for path in /api/cron/brief /api/cron/deck-nudge /api/cron/gmail-sync; do
             code=$(curl -sS -m 60 -o /tmp/body "$BASE$path" \
               -H "Authorization: Bearer $CRON_SECRET" -w "%{http_code}") || code="000"
             echo "$path -> HTTP $code : $(head -c 200 /tmp/body)"

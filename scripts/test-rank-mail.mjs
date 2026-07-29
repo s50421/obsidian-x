@@ -1,0 +1,235 @@
+// Obsidian-X v4.1 — exit tests for the mail ranker's SCORING half.
+//
+//   node --experimental-strip-types --no-warnings scripts/test-rank-mail.mjs
+//
+// The scoring layer is pure (headers + a content read in, a score out), so it
+// can be tested without Gmail credentials or network. These assertions encode
+// the brief's exit tests and the owner's never-miss rules directly:
+//
+//   - "Newsletter/bulk mail never ranks above a direct question from a VIP."
+//   - the four never-miss signals (deadline, awaiting-reply, money/legal,
+//     direct-to-me-not-bulk)
+//   - the strict auto-create bar (VIP AND direct AND deadline/question/money)
+//
+// lib/rank-mail.ts is TypeScript behind the "@/" alias, so this runs under
+// node's type-stripping with the same resolver hook the W2 tests use.
+
+import assert from "node:assert/strict";
+import { register } from "node:module";
+import test from "node:test";
+
+register(new URL("./_alias-hook.mjs", import.meta.url), import.meta.url);
+
+const {
+  deterministicSignals,
+  scoreMail,
+  meetsAutoCreateBar,
+  canSkipContentPass,
+  othersSpokeLast,
+  isVipSender,
+  SURFACE_THRESHOLD,
+} = await import("../lib/rank-mail.ts");
+
+const ME = "davi.manhart@gmail.com";
+
+const VIP = { addresses: ["jane@acme.com"], domains: ["vbank.example"], names: ["priya"] };
+const DEMOTE = { addresses: [], domains: [], subjects: ["weekly digest"] };
+
+/** Minimal GmailMessageMeta factory. */
+function msg(headers, { labelIds = [], snippet = "" } = {}) {
+  const lower = {};
+  for (const [k, v] of Object.entries(headers)) lower[k.toLowerCase()] = v;
+  return {
+    id: "m1",
+    threadId: "t1",
+    internalDate: Date.now(),
+    snippet,
+    labelIds,
+    headers: lower,
+  };
+}
+
+/** A confident model read. */
+const read = (o = {}) => ({
+  importance: 0.5,
+  deadline: false,
+  question: false,
+  money: false,
+  reason: "test",
+  confidence: 0.9,
+  usage: null,
+  ...o,
+});
+
+const NEWSLETTER = msg({
+  From: "Marketing <news@shop.example>",
+  To: ME,
+  Subject: "🔥 FINAL HOURS — 70% off everything!",
+  "List-Unsubscribe": "<https://shop.example/u>",
+});
+
+const VIP_QUESTION = msg({
+  From: "Jane Doe <jane@acme.com>",
+  To: ME,
+  Subject: "Can you send me the Q3 numbers?",
+});
+
+// ---------------------------------------------------------------------------
+
+test("VIP matching covers address, domain and display name", () => {
+  assert.equal(isVipSender({ name: "Jane Doe", email: "jane@acme.com" }, VIP), true);
+  assert.equal(isVipSender({ name: "", email: "ops@vbank.example" }, VIP), true);
+  assert.equal(isVipSender({ name: "Priya Raman", email: "p@other.com" }, VIP), true);
+  assert.equal(isVipSender({ name: "Random", email: "nobody@other.com" }, VIP), false);
+});
+
+test("bulk headers are detected and never classified by the model", () => {
+  const s = deterministicSignals(NEWSLETTER, ME, VIP, DEMOTE);
+  assert.equal(s.bulk, true, "List-Unsubscribe must mark it bulk");
+  assert.equal(canSkipContentPass(s), true, "a newsletter must not cost a model call");
+});
+
+test("EXIT TEST: a newsletter never outranks a direct question from a VIP", () => {
+  // Give the newsletter every benefit of the doubt the model could offer.
+  const bulk = scoreMail(
+    deterministicSignals(NEWSLETTER, ME, VIP, DEMOTE),
+    read({ importance: 1, deadline: true, question: true, money: true, confidence: 1 })
+  );
+  const vip = scoreMail(
+    deterministicSignals(VIP_QUESTION, ME, VIP, DEMOTE),
+    read({ importance: 0.8, question: true })
+  );
+  assert.ok(
+    vip.score > bulk.score,
+    `VIP (${vip.score}) must outrank maximally-flattering bulk (${bulk.score})`
+  );
+  assert.ok(bulk.score < SURFACE_THRESHOLD, "bulk must stay below the surface threshold");
+  assert.ok(vip.score >= SURFACE_THRESHOLD, "a VIP's direct question must surface");
+});
+
+test("a no-reply sender counts as bulk even without List-Unsubscribe", () => {
+  const s = deterministicSignals(
+    msg({ From: "no-reply@service.example", To: ME, Subject: "Your receipt" }),
+    ME,
+    VIP,
+    DEMOTE
+  );
+  assert.equal(s.bulk, true);
+});
+
+test("never-miss 1 + 3: deadline and money/legal both lift the score", () => {
+  const plain = msg({ From: "Bob <bob@other.com>", To: ME, Subject: "Contract" });
+  const base = scoreMail(deterministicSignals(plain, ME, VIP, DEMOTE), read());
+  const withDeadline = scoreMail(
+    deterministicSignals(plain, ME, VIP, DEMOTE),
+    read({ deadline: true })
+  );
+  const withMoney = scoreMail(deterministicSignals(plain, ME, VIP, DEMOTE), read({ money: true }));
+  assert.ok(withDeadline.score > base.score, "a deadline must raise the score");
+  assert.ok(withMoney.score > base.score, "money/legal must raise the score");
+});
+
+test("never-miss 2: a thread awaiting my reply outranks the same thread otherwise", () => {
+  const m = msg({
+    From: "Bob <bob@other.com>",
+    To: ME,
+    Subject: "Re: proposal",
+    "In-Reply-To": "<abc@mail>",
+  });
+  const quiet = scoreMail(deterministicSignals(m, ME, VIP, DEMOTE, false), read());
+  const owed = scoreMail(deterministicSignals(m, ME, VIP, DEMOTE, true), read());
+  assert.ok(owed.score > quiet.score, "owing a reply must raise the score");
+});
+
+test("never-miss 4: cc-only ranks below direct-to-me", () => {
+  const direct = scoreMail(
+    deterministicSignals(
+      msg({ From: "Bob <bob@other.com>", To: ME, Subject: "Q" }),
+      ME,
+      VIP,
+      DEMOTE
+    ),
+    read()
+  );
+  const cc = scoreMail(
+    deterministicSignals(
+      msg({ From: "Bob <bob@other.com>", To: "someone@else.com", Cc: ME, Subject: "Q" }),
+      ME,
+      VIP,
+      DEMOTE
+    ),
+    read()
+  );
+  assert.ok(direct.score > cc.score, "direct must outrank cc-only");
+});
+
+test("a large To: list is not 'direct'", () => {
+  const many = [ME, "a@x.com", "b@x.com", "c@x.com", "d@x.com", "e@x.com"].join(", ");
+  const s = deterministicSignals(
+    msg({ From: "Bob <bob@other.com>", To: many, Subject: "All hands" }),
+    ME,
+    VIP,
+    DEMOTE
+  );
+  assert.equal(s.direct, false);
+});
+
+test("demote rules cap a matching subject hard", () => {
+  const s = deterministicSignals(
+    msg({ From: "Jane Doe <jane@acme.com>", To: ME, Subject: "Weekly digest — team news" }),
+    ME,
+    VIP,
+    DEMOTE
+  );
+  assert.equal(s.demoted, true, "subject rule must match case-insensitively");
+  const r = scoreMail(s, read({ importance: 1, deadline: true, confidence: 1 }));
+  assert.ok(r.score <= 10, `a demoted message must be capped (got ${r.score})`);
+  assert.equal(r.autoCreate, false, "a demoted message must never auto-create");
+});
+
+test("auto-create bar: strict AND of VIP, direct, and a real signal", () => {
+  const s = deterministicSignals(VIP_QUESTION, ME, VIP, DEMOTE);
+
+  assert.equal(
+    meetsAutoCreateBar(s, read({ question: true, importance: 0.8, confidence: 0.8 })),
+    true,
+    "VIP + direct + question + confident should auto-create"
+  );
+  assert.equal(
+    meetsAutoCreateBar(s, read({ question: true, importance: 0.8, confidence: 0.4 })),
+    false,
+    "a low-confidence read must never auto-create"
+  );
+  assert.equal(
+    meetsAutoCreateBar(s, read({ importance: 0.95, confidence: 1 })),
+    false,
+    "high importance alone, with no deadline/question/money, must not auto-create"
+  );
+
+  const notVip = deterministicSignals(
+    msg({ From: "Bob <bob@other.com>", To: ME, Subject: "Can you send this by Friday?" }),
+    ME,
+    VIP,
+    DEMOTE
+  );
+  assert.equal(
+    meetsAutoCreateBar(notVip, read({ question: true, deadline: true, importance: 1, confidence: 1 })),
+    false,
+    "a non-VIP must never auto-create, however urgent it looks"
+  );
+});
+
+test("a VIP writing directly is always read by the model", () => {
+  // Even if Gmail filed it under Promotions, don't skip the content pass.
+  const s = deterministicSignals(VIP_QUESTION, ME, VIP, DEMOTE);
+  assert.equal(canSkipContentPass(s), false);
+});
+
+test("othersSpokeLast only fires when I am actually in the conversation", () => {
+  const them = { headers: { from: "Bob <bob@other.com>" } };
+  const me = { headers: { from: `Me <${ME}>` } };
+  assert.equal(othersSpokeLast([them, me, them], ME), true, "I spoke, they replied → I owe one");
+  assert.equal(othersSpokeLast([them, me], ME), false, "I spoke last → nothing owed");
+  assert.equal(othersSpokeLast([them, them], ME), false, "I never spoke → not my thread yet");
+  assert.equal(othersSpokeLast([], ME), false);
+});

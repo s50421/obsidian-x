@@ -4,6 +4,7 @@ import { ownerEmail } from "@/lib/owner";
 import { captureText } from "@/lib/capture-core";
 import { clickupConfigured } from "@/lib/clickup";
 import { proposeClickUpTaskForItem, notifyClickUpProposal } from "@/lib/proposals";
+import { reportSourceStatus } from "@/lib/source-status";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -80,6 +81,14 @@ export async function POST(req: Request) {
 
   try {
     const outcome = await captureText(owner.id, composed, "email");
+
+    // v4.1 — the forward-to-brain channel just proved it works.
+    void reportSourceStatus(admin, owner.id, {
+      source: "email",
+      label: "Forward-to-brain",
+      connected: true,
+      error: null,
+    });
 
     // T4: an actionable email (a task) becomes a proposed ClickUp task the owner
     // approves in Telegram — alongside the note, which stays in the brain.

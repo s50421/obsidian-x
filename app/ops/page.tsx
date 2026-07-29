@@ -14,6 +14,15 @@ import {
   TYPE_HUE,
   TYPE_SOLID,
 } from "../components/ui";
+import Coverage from "./Coverage";
+import MailTuning, { type InflowRow } from "./MailTuning";
+import {
+  ensureDeclaredSources,
+  loadSourceStatus,
+  type SourceStatusRow,
+} from "@/lib/source-status";
+import { googleConfigured, loadAccounts } from "@/lib/google-auth";
+import { MIN_CONFIDENCE, SURFACE_THRESHOLD } from "@/lib/rank-mail";
 
 export const dynamic = "force-dynamic";
 
@@ -99,6 +108,11 @@ export default async function OpsPage() {
   const admin = createAdminClient();
   const uid = user.id;
 
+  // v4.1 — make sure every declared source has a row before rendering, so the
+  // panel shows the full declared set from the very first visit (a source that
+  // has never synced reads as "not connected", never as absent).
+  await ensureDeclaredSources(admin, uid);
+
   const [itemsRes, usageRes, auditRes] = await Promise.all([
     admin.from("items").select("source,status,needs_review,sensitive,type,created_at").eq("user_id", uid),
     admin.from("llm_usage").select("operation,cost_usd,total_tokens,created_at").eq("user_id", uid),
@@ -138,6 +152,33 @@ export default async function OpsPage() {
   const maxSource = Math.max(1, ...sources.map((s) => s.total));
   const recent24h = sources.reduce((a, s) => a + s.recent, 0);
 
+  // v4.1 coverage + mail-ranking data.
+  const [statusRows, accounts, surfacedRes, recentInflowRes] = await Promise.all([
+    loadSourceStatus(admin, uid) as Promise<SourceStatusRow[]>,
+    loadAccounts(admin, uid),
+    // Confidence lives inside a jsonb blob, and a PostgREST `->>` filter would
+    // compare it as TEXT — lexicographic, not numeric. Fetch the high scorers
+    // and split them on confidence here, where the comparison is a real number.
+    admin
+      .from("inflow_events")
+      .select("id,subject,sender,ts,ranked_score,ranked_reason,state,item_id")
+      .eq("user_id", uid)
+      .gte("ranked_score", SURFACE_THRESHOLD)
+      .order("ts", { ascending: false })
+      .limit(60),
+    admin
+      .from("inflow_events")
+      .select("id,subject,sender,ts,ranked_score,ranked_reason,state,item_id")
+      .eq("user_id", uid)
+      .order("ts", { ascending: false })
+      .limit(15),
+  ]);
+  const lowConfidence = ((surfacedRes.data ?? []) as InflowRow[])
+    .filter((r) => Number(r.ranked_reason?.confidence ?? 0) < MIN_CONFIDENCE)
+    .slice(0, 10);
+  const recentInflow = (recentInflowRes.data ?? []) as InflowRow[];
+  const nowMs = Date.now();
+
   const startToday = new Date();
   startToday.setHours(0, 0, 0, 0);
   const sum = (rows: UsageRow[], f: (r: UsageRow) => number) => rows.reduce((a, r) => a + f(r), 0);
@@ -169,10 +210,20 @@ export default async function OpsPage() {
         </div>
 
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-          {/* Coverage — where everything came from. */}
+          {/* v4.1 — the inflow monitor: what this thing can actually see. */}
+          <Coverage
+            rows={statusRows}
+            now={nowMs}
+            connectedMailboxes={accounts.map((a) => a.email)}
+            googleReady={googleConfigured()}
+          />
+
+          <MailTuning lowConfidence={lowConfidence} recent={recentInflow} />
+
+          {/* Where the stored items came from (all-time capture mix). */}
           <div className={`flex flex-col gap-3 p-5 md:col-span-2 ${CARD}`}>
             <div className="flex items-baseline justify-between gap-3">
-              <SectionLabel>Sources</SectionLabel>
+              <SectionLabel>Captured by source</SectionLabel>
               <span className="text-xs text-ink-3">
                 {sources.length} {sources.length === 1 ? "source" : "sources"} · {items.length.toLocaleString()} items
                 all-time
@@ -207,8 +258,8 @@ export default async function OpsPage() {
               </div>
             )}
             <p className="text-xs leading-relaxed text-ink-3">
-              Counts are what actually arrived, all-time; the blue figure is the last 24 hours. Declared-vs-actual
-              coverage lands with the inflow monitor in v4.1.
+              Stored items by the source that created them, all-time; the blue figure is the last 24 hours.
+              Declared-vs-actual coverage is the panel above.
             </p>
           </div>
 

@@ -10,6 +10,7 @@ import { deleteVaultNote } from "@/lib/vault";
 import { reprojectItemToVault } from "@/lib/vault-sync";
 import { applyProposal, rejectProposalById } from "@/lib/proposals";
 import { logAudit } from "@/lib/audit";
+import { reportSourceStatus } from "@/lib/source-status";
 import { logLlmUsage } from "@/lib/usage";
 import { sendMessage, answerCallbackQuery, editMessageText } from "@/lib/telegram";
 import {
@@ -93,6 +94,15 @@ export async function POST(req: Request) {
   if (le || !list) return OK;
   const owner = list.users.find((u) => (u.email ?? "").toLowerCase() === ownerEmail());
   if (!owner) return OK;
+
+  // v4.1 — a live update IS proof the channel works; keep the coverage panel
+  // fresh between morning briefs.
+  void reportSourceStatus(admin, owner.id, {
+    source: "telegram",
+    label: "Telegram",
+    connected: true,
+    error: null,
+  });
 
   try {
     if (update.callback_query) {

@@ -42,9 +42,27 @@ function toHttps(u: string): string {
   return u.replace(/^webcal:\/\//i, "https://");
 }
 
+// Per-calendar outcome — v4.1 needs to tell "this calendar is empty" apart from
+// "this calendar failed to fetch". Under the completeness law those are very
+// different states: one is fine, the other is a coverage hole that must show ⚠.
+export type CalendarFetch = {
+  name: string;
+  ok: boolean;
+  count: number;
+  error: string | null;
+};
+
 // Events starting within the next `windowHours`, across all calendars.
 // Recurring events are expanded (with exdate exceptions honoured).
 export async function fetchUpcomingEvents(windowHours = 24): Promise<CalEvent[]> {
+  return (await fetchUpcomingEventsWithStatus(windowHours)).events;
+}
+
+// The same fetch, but reporting each calendar's health alongside the events so
+// the coverage panel and the brief footer can say "20/20" honestly.
+export async function fetchUpcomingEventsWithStatus(
+  windowHours = 24
+): Promise<{ events: CalEvent[]; calendars: CalendarFetch[] }> {
   const now = new Date();
   const end = new Date(now.getTime() + windowHours * 3600 * 1000);
   const cals = getCalendarUrls();
@@ -52,7 +70,7 @@ export async function fetchUpcomingEvents(windowHours = 24): Promise<CalEvent[]>
   const perCal = await Promise.allSettled(
     cals.map(async (c): Promise<CalEvent[]> => {
       const res = await fetch(toHttps(c.url), { signal: AbortSignal.timeout(8000) });
-      if (!res.ok) return [];
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const parsed = ical.sync.parseICS(await res.text());
       const events: CalEvent[] = [];
 
@@ -116,7 +134,41 @@ export async function fetchUpcomingEvents(windowHours = 24): Promise<CalEvent[]>
   );
 
   const all: CalEvent[] = [];
-  for (const r of perCal) if (r.status === "fulfilled") all.push(...r.value);
+  const calendars: CalendarFetch[] = perCal.map((r, i) => {
+    const name = cals[i]?.name ?? `Calendar ${i + 1}`;
+    if (r.status === "fulfilled") {
+      all.push(...r.value);
+      return { name, ok: true, count: r.value.length, error: null };
+    }
+    const reason = r.reason instanceof Error ? r.reason.message : String(r.reason);
+    return { name, ok: false, count: 0, error: reason.slice(0, 200) };
+  });
   all.sort((a, b) => a.start.getTime() - b.start.getTime());
-  return all;
+  return { events: all, calendars };
+}
+
+/**
+ * Overlapping events in the fetched window (v4.1 workstream D — data only; the
+ * letter renders these in v4.2). All-day events are excluded: they overlap
+ * everything by construction and would drown the real conflicts.
+ */
+export type CalConflict = { a: CalEvent; b: CalEvent };
+
+export function detectConflicts(events: CalEvent[]): CalConflict[] {
+  const timed = events
+    .filter((e) => !e.allDay && e.end)
+    .sort((a, b) => a.start.getTime() - b.start.getTime());
+  const out: CalConflict[] = [];
+  for (let i = 0; i < timed.length; i++) {
+    for (let j = i + 1; j < timed.length; j++) {
+      const a = timed[i];
+      const b = timed[j];
+      // Sorted by start, so once b starts at/after a's end nothing later overlaps a.
+      if (b.start.getTime() >= a.end!.getTime()) break;
+      // Identical event synced into two calendars isn't a conflict.
+      if (a.summary === b.summary && a.start.getTime() === b.start.getTime()) continue;
+      out.push({ a, b });
+    }
+  }
+  return out;
 }

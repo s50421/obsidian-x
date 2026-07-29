@@ -40,6 +40,25 @@ async function api<T = unknown>(
   }
 }
 
+// v4.1 — a real liveness probe for the coverage panel. Telegram is a PUSH
+// source, so "nothing arrived today" says nothing about health; what actually
+// matters is whether the bot token still works and the webhook is registered
+// and not backed up with failures.
+export async function checkTelegramHealth(): Promise<{ ok: boolean; error: string | null }> {
+  if (!token()) return { ok: false, error: "TELEGRAM_BOT_TOKEN not set" };
+  const info = await api<{
+    url?: string;
+    last_error_message?: string;
+    pending_update_count?: number;
+  }>("getWebhookInfo", {});
+  if (!info) return { ok: false, error: "Bot API unreachable or token rejected" };
+  if (!info.url) return { ok: false, error: "no webhook registered" };
+  if (info.last_error_message) {
+    return { ok: false, error: `webhook delivery error: ${info.last_error_message}` };
+  }
+  return { ok: true, error: null };
+}
+
 // Send a message to the owner's chat (or an explicit chat_id). Markdown-parsed.
 export async function sendMessage(
   text: string,

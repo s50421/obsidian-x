@@ -10,7 +10,8 @@
     "icons": "node scripts/gen-icons.mjs",
     "setup": "node --env-file=.env.local scripts/setup.mjs",
     "smoke": "node --env-file=.env.local scripts/smoke.mjs",
-    "test:w2": "node --test scripts/test-retitle-core.mjs && node scripts/test-reprocess-e2e.mjs && node --experimental-strip-types --no-warnings scripts/test-apply-proposal.mjs"
+    "test:w2": "node --test scripts/test-retitle-core.mjs && node scripts/test-reprocess-e2e.mjs && node --experimental-strip-types --no-warnings scripts/test-apply-proposal.mjs",
+    "test:v41": "node --experimental-strip-types --no-warnings scripts/test-rank-mail.mjs"
   },
   "dependencies": {
     "@octokit/rest": "^22.0.1",
