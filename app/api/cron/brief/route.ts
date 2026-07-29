@@ -125,13 +125,36 @@ export async function GET(req: Request) {
     day: "numeric",
   }).format(now);
 
+  // Group under day labels (Today / Tomorrow / weekday) so a "next 24h" list that
+  // spans midnight reads in order instead of looking shuffled.
+  const tomorrowStr = localDateStr(tz, new Date(now.getTime() + 24 * 3600 * 1000));
+  const dayLabelFor = (start: Date): string => {
+    const d = localDateStr(tz, start);
+    if (d === localDate) return "Today";
+    if (d === tomorrowStr) return "Tomorrow";
+    return new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "long" }).format(start);
+  };
+  const sortedEvents = [...events].sort((a, b) => a.start.getTime() - b.start.getTime());
+  const dayGroups: { label: string; items: typeof sortedEvents }[] = [];
+  for (const e of sortedEvents) {
+    const label = dayLabelFor(e.start);
+    const last = dayGroups[dayGroups.length - 1];
+    if (last && last.label === label) last.items.push(e);
+    else dayGroups.push({ label, items: [e] });
+  }
   const eventsText = events.length
-    ? events
+    ? dayGroups
         .map(
-          (e) =>
-            `• ${e.allDay ? "All day" : timeFmt(tz, e.start)} — ${e.summary}${e.location ? ` @ ${e.location}` : ""}  _(${e.calendar})_`
+          (g) =>
+            `*${g.label}*\n` +
+            g.items
+              .map(
+                (e) =>
+                  `• ${e.allDay ? "All day" : timeFmt(tz, e.start)} — ${e.summary}${e.location ? ` @ ${e.location}` : ""}  _(${e.calendar})_`
+              )
+              .join("\n")
         )
-        .join("\n")
+        .join("\n\n")
     : "_nothing scheduled_";
 
   const due = dueItems ?? [];
