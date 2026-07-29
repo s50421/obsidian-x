@@ -5,7 +5,7 @@ import { ownerEmail } from "@/lib/owner";
 import { captureText } from "@/lib/capture-core";
 import { answerQuestion } from "@/lib/ask-core";
 import { interpretIntent } from "@/lib/intent";
-import { embed } from "@/lib/embed";
+import { embedText } from "@/lib/embed";
 import { deleteVaultNote } from "@/lib/vault";
 import { reprojectItemToVault } from "@/lib/vault-sync";
 import { applyProposal, rejectProposalById } from "@/lib/proposals";
@@ -468,8 +468,11 @@ function stripMarkdown(s: string): string {
 // ~0.75), so a fixed low threshold matches everything. Instead we look for a
 // candidate that clearly STANDS OUT: strong absolute score AND a margin over the
 // pack. STRONG separates a real match (~0.9) from the noise floor (~0.78).
-const COMPLETE_STRONG = 0.8;
-const COMPLETE_MARGIN = 0.07;
+// PROVISIONAL for text-embedding-3-large @1024d (wider score spread than gte-small).
+// Finalize from scripts/measure-similarity.mjs output during the apply phase:
+// STRONG = NN p50; MARGIN = 0.15 * (1 - all-pairs mean).
+const COMPLETE_STRONG = 0.45;
+const COMPLETE_MARGIN = 0.12;
 
 // Complete a specific item the owner reported as done. Resolves their phrasing to
 // open items semantically. Clear winner -> do it (with Undo); a close cluster ->
@@ -588,8 +591,8 @@ async function resolveMatches(
 ): Promise<Match[]> {
   const q = target.trim();
   if (!q) return [];
-  const embedding = await embed(q);
-  const { data: neigh } = await admin.rpc("match_neighbors", {
+  const embedding = await embedText(q);
+  const { data: neigh } = await admin.rpc("match_neighbors_v2", {
     query_embedding: embedding,
     owner: userId,
     exclude_id: null,

@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { ownerEmail } from "@/lib/owner";
 import { chat } from "@/lib/openrouter";
-import { embed } from "@/lib/embed";
+import { embedText } from "@/lib/embed";
 import { writeVaultNote } from "@/lib/vault";
 import { logAudit } from "@/lib/audit";
 import { logLlmUsage } from "@/lib/usage";
@@ -66,7 +66,7 @@ export async function GET(req: Request) {
 
   const createdAt = new Date().toISOString();
   const title = `Daily digest — ${createdAt.slice(0, 10)}`;
-  const embedding = await embed(`${title}\n\n${summary}`);
+  const embedding = await embedText(`${title}\n\n${summary}`);
 
   const { data: item, error } = await admin
     .from("items")
@@ -80,7 +80,7 @@ export async function GET(req: Request) {
       priority: "low",
       tags: ["digest"],
       source: "system",
-      embedding,
+      embedding_v2: embedding,
       created_at: createdAt,
       valid_from: createdAt,
     })
