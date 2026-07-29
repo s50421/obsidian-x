@@ -62,7 +62,13 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 
-  const dry = new URL(req.url).searchParams.get("dry") === "1";
+  const params = new URL(req.url).searchParams;
+  const dry = params.get("dry") === "1";
+  // Owner-triggered TEST send: bypass the 06:15-07:15 window AND the once-a-day
+  // gate, and do NOT record the brief_sent marker — so it can be fired anytime,
+  // repeatedly, without suppressing the real 6:30am-local delivery. Still
+  // CRON_SECRET-gated (same as the cron caller).
+  const force = params.get("force") === "1";
 
   const admin = createAdminClient();
   const { data: list, error: le } = await admin.auth.admin.listUsers();
@@ -90,11 +96,13 @@ export async function GET(req: Request) {
     return NextResponse.json({ dry: true, wouldSend, tz, localTime });
   }
 
-  if (!inWindow) {
-    return NextResponse.json({ skipped: true, reason: "outside-window", tz, localTime });
-  }
-  if (await alreadySentForLocalDate(admin, owner.id, localDate)) {
-    return NextResponse.json({ skipped: true, reason: "already-sent", tz, localTime });
+  if (!force) {
+    if (!inWindow) {
+      return NextResponse.json({ skipped: true, reason: "outside-window", tz, localTime });
+    }
+    if (await alreadySentForLocalDate(admin, owner.id, localDate)) {
+      return NextResponse.json({ skipped: true, reason: "already-sent", tz, localTime });
+    }
   }
 
   const events = await fetchUpcomingEvents(24);
@@ -146,12 +154,16 @@ export async function GET(req: Request) {
     : undefined;
 
   await sendMessage(brief, { reply_markup });
-  await logAudit(admin, {
-    user_id: owner.id,
-    action: BRIEF_SENT_ACTION,
-    actor: "system",
-    detail: { events: events.length, due: due.length, tz, localDate },
-  });
+  // A forced test send is not the daily delivery: don't write the brief_sent
+  // marker, so the real 6:30am-local send still fires and tests stay repeatable.
+  if (!force) {
+    await logAudit(admin, {
+      user_id: owner.id,
+      action: BRIEF_SENT_ACTION,
+      actor: "system",
+      detail: { events: events.length, due: due.length, tz, localDate },
+    });
+  }
 
-  return NextResponse.json({ ok: true, events: events.length, due: due.length, tz, localTime });
+  return NextResponse.json({ ok: true, forced: force, events: events.length, due: due.length, tz, localTime, brief });
 }
