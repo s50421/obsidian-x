@@ -1,7 +1,9 @@
 // Telegram Bot API helpers. Outbound push (v1.4) + the two-way channel (v1.5).
 // Everything is a no-op until TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID are set.
 
-export type InlineButton = { text: string; callback_data: string };
+// A button is either a callback (round-trips through our webhook) or a plain
+// deep-link (opens the URL directly, e.g. the PWA's /deck route — v4.0 W3).
+export type InlineButton = { text: string; callback_data: string } | { text: string; url: string };
 export type InlineKeyboard = { inline_keyboard: InlineButton[][] };
 
 type SendOpts = {
