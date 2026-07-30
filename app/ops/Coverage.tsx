@@ -1,6 +1,6 @@
 import { CARD, SectionLabel } from "../components/ui";
 import { healthOf, type SourceHealth, type SourceStatusRow } from "@/lib/source-status";
-import GmailConnect from "./GmailConnect";
+import GmailConnect, { type ConnectedMailbox } from "./GmailConnect";
 
 // v4.1 workstream B — the inflow monitor. This is the trust surface: it answers
 // "what can this thing actually see?" at a glance.
@@ -33,11 +33,13 @@ function Row({
   now,
   child = false,
   connectedMailboxes,
+  personalReady = false,
 }: {
   row: SourceStatusRow;
   now: number;
   child?: boolean;
-  connectedMailboxes?: string[];
+  connectedMailboxes?: ConnectedMailbox[];
+  personalReady?: boolean;
 }) {
   const health = healthOf(row, now);
   const style = HEALTH_STYLE[health];
@@ -73,7 +75,7 @@ function Row({
           <div className="mt-1 line-clamp-2 text-xs leading-relaxed text-danger/80">{row.last_error}</div>
         )}
         {row.source === "gmail" && !child && (
-          <GmailConnect connected={connectedMailboxes ?? []} />
+          <GmailConnect connected={connectedMailboxes ?? []} personalReady={personalReady} />
         )}
       </div>
       {row.events_24h > 0 && (
@@ -91,11 +93,13 @@ export default function Coverage({
   now,
   connectedMailboxes,
   googleReady,
+  personalReady,
 }: {
   rows: SourceStatusRow[];
   now: number;
-  connectedMailboxes: string[];
+  connectedMailboxes: ConnectedMailbox[];
   googleReady: boolean;
+  personalReady: boolean;
 }) {
   const parents = rows.filter((r) => r.channel === "");
   const childrenOf = (source: string) => rows.filter((r) => r.channel !== "" && r.source === source);
@@ -123,7 +127,7 @@ export default function Coverage({
       <div className="divide-y divide-hairline">
         {declared.map((r) => (
           <div key={`${r.source}:${r.channel}`}>
-            <Row row={r} now={now} connectedMailboxes={connectedMailboxes} />
+            <Row row={r} now={now} connectedMailboxes={connectedMailboxes} personalReady={personalReady} />
             {childrenOf(r.source).map((c) => (
               <Row key={`${c.source}:${c.channel}`} row={c} now={now} child />
             ))}

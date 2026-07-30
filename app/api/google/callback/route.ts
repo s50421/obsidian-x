@@ -8,7 +8,9 @@ import {
   exchangeCode,
   fetchProfileEmail,
   GMAIL_SCOPE,
+  isGoogleApp,
   upsertAccount,
+  type GoogleApp,
 } from "@/lib/google-auth";
 
 export const runtime = "nodejs";
@@ -49,8 +51,12 @@ export async function GET(req: Request) {
     return done({ google: "error", detail: "state mismatch" });
   }
 
+  // The connect leg encoded which OAuth client it used as "<app>:<nonce>".
+  const appPrefix = state.split(":")[0];
+  const app: GoogleApp = isGoogleApp(appPrefix) ? appPrefix : "workspace";
+
   try {
-    const tok = await exchangeCode(code);
+    const tok = await exchangeCode(code, app);
     if (!tok.refresh_token) {
       // Without a refresh token the connection dies in an hour — refuse it
       // rather than register a source that will silently stop working.
@@ -61,6 +67,7 @@ export async function GET(req: Request) {
     const admin = createAdminClient();
     await upsertAccount(admin, user.id, {
       email,
+      app,
       refresh_token: tok.refresh_token,
       access_token: tok.access_token,
       expires_at: Date.now() + (tok.expires_in ?? 3600) * 1000,

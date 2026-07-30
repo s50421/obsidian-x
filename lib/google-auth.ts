@@ -19,9 +19,46 @@ export const GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.readonly";
 /** settings key holding the map of connected mailboxes. */
 const ACCOUNTS_KEY = "google_accounts";
 
+/**
+ * Which OAuth client a mailbox was granted under.
+ *
+ * `workspace` — the Internal app on the Workspace org. Skips verification, no
+ *   token expiry, but can ONLY be authorized by accounts inside the Workspace.
+ * `personal`  — an optional second client (a separate External app) for a
+ *   consumer Gmail, which the internal app is structurally unable to accept.
+ *
+ * Two clients means two secrets, and a refresh MUST go back to the client that
+ * issued the grant — hence this is stored per account rather than assumed.
+ */
+export type GoogleApp = "workspace" | "personal";
+
+export function isGoogleApp(v: string): v is GoogleApp {
+  return v === "workspace" || v === "personal";
+}
+
+type ClientCreds = { id: string; secret: string };
+
+function credsFor(app: GoogleApp): ClientCreds {
+  if (app === "personal") {
+    return {
+      id: (process.env.GOOGLE_CLIENT_ID_PERSONAL ?? "").trim(),
+      secret: (process.env.GOOGLE_CLIENT_SECRET_PERSONAL ?? "").trim(),
+    };
+  }
+  return { id: googleClientId(), secret: googleClientSecret() };
+}
+
+export function appConfigured(app: GoogleApp): boolean {
+  const c = credsFor(app);
+  return !!c.id && !!c.secret;
+}
+
 export type GoogleAccount = {
   /** The mailbox address, e.g. davi.manhart@gmail.com — also the channel id. */
   email: string;
+  /** Which OAuth client issued this grant. Absent on pre-dual-client rows,
+   *  which were all workspace grants. */
+  app?: GoogleApp;
   refresh_token: string;
   /** Cached access token + expiry, refreshed on demand. */
   access_token?: string;
@@ -121,9 +158,9 @@ export async function setHistoryId(
 
 // ---- OAuth ------------------------------------------------------------------
 
-export function authUrl(state: string, loginHint?: string): string {
+export function authUrl(state: string, loginHint?: string, app: GoogleApp = "workspace"): string {
   const p = new URLSearchParams({
-    client_id: googleClientId(),
+    client_id: credsFor(app).id,
     redirect_uri: googleRedirectUri(),
     response_type: "code",
     scope: GMAIL_SCOPE,
@@ -147,14 +184,15 @@ type TokenResponse = {
   error_description?: string;
 };
 
-export async function exchangeCode(code: string): Promise<TokenResponse> {
+export async function exchangeCode(code: string, app: GoogleApp = "workspace"): Promise<TokenResponse> {
+  const c = credsFor(app);
   const res = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
       code,
-      client_id: googleClientId(),
-      client_secret: googleClientSecret(),
+      client_id: c.id,
+      client_secret: c.secret,
       redirect_uri: googleRedirectUri(),
       grant_type: "authorization_code",
     }),
@@ -178,12 +216,14 @@ export async function accessTokenFor(
   if (account.access_token && account.expires_at && account.expires_at - 60_000 > Date.now()) {
     return account.access_token;
   }
+  // Refresh MUST go back to the client that issued the grant.
+  const c = credsFor(account.app ?? "workspace");
   const res = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
-      client_id: googleClientId(),
-      client_secret: googleClientSecret(),
+      client_id: c.id,
+      client_secret: c.secret,
       refresh_token: account.refresh_token,
       grant_type: "refresh_token",
     }),

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
 import { createClient } from "@/lib/supabase/server";
-import { authUrl, googleConfigured } from "@/lib/google-auth";
+import { appConfigured, authUrl, isGoogleApp, type GoogleApp } from "@/lib/google-auth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -16,16 +16,23 @@ export async function GET(req: Request) {
   } = await supabase.auth.getUser();
   if (!user) return NextResponse.redirect(new URL("/login", req.url));
 
-  if (!googleConfigured()) {
+  const params = new URL(req.url).searchParams;
+  const appParam = params.get("app") ?? "workspace";
+  const app: GoogleApp = isGoogleApp(appParam) ? appParam : "workspace";
+
+  if (!appConfigured(app)) {
+    const suffix = app === "personal" ? "_PERSONAL" : "";
     return NextResponse.json(
-      { error: "GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET not configured" },
+      { error: `GOOGLE_CLIENT_ID${suffix} / GOOGLE_CLIENT_SECRET${suffix} not configured` },
       { status: 500 }
     );
   }
 
-  const hint = new URL(req.url).searchParams.get("email") ?? undefined;
-  const state = randomUUID();
-  const res = NextResponse.redirect(authUrl(state, hint));
+  const hint = params.get("email") ?? undefined;
+  // The callback has to exchange the code against the SAME client, so the
+  // choice rides along in the (httpOnly, CSRF-checked) state cookie.
+  const state = `${app}:${randomUUID()}`;
+  const res = NextResponse.redirect(authUrl(state, hint, app));
   res.cookies.set("obx_google_state", state, {
     httpOnly: true,
     secure: true,

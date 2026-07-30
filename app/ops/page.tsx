@@ -21,7 +21,7 @@ import {
   loadSourceStatus,
   type SourceStatusRow,
 } from "@/lib/source-status";
-import { googleConfigured, loadAccounts } from "@/lib/google-auth";
+import { appConfigured, googleConfigured, loadAccounts } from "@/lib/google-auth";
 import { MIN_CONFIDENCE, SURFACE_THRESHOLD } from "@/lib/rank-mail";
 
 export const dynamic = "force-dynamic";
@@ -214,8 +214,9 @@ export default async function OpsPage() {
           <Coverage
             rows={statusRows}
             now={nowMs}
-            connectedMailboxes={accounts.map((a) => a.email)}
+            connectedMailboxes={accounts.map((a) => ({ email: a.email, app: a.app ?? "workspace" }))}
             googleReady={googleConfigured()}
+            personalReady={appConfigured("personal")}
           />
 
           <MailTuning lowConfidence={lowConfidence} recent={recentInflow} />
