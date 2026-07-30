@@ -16,6 +16,8 @@ import {
 } from "../components/ui";
 import Coverage from "./Coverage";
 import MailTuning, { type InflowRow } from "./MailTuning";
+import Scorecard from "./Scorecard";
+import { buildScorecard } from "@/lib/scorecard";
 import {
   ensureDeclaredSources,
   loadSourceStatus,
@@ -193,6 +195,9 @@ export default async function OpsPage({
   const recentInflow = (recentInflowRes.data ?? []) as InflowRow[];
   const nowMs = Date.now();
 
+  // v4.2 C — the vision's 8 KPIs, computed from real signals where they exist.
+  const kpis = await buildScorecard(admin, uid);
+
   const startToday = new Date();
   startToday.setHours(0, 0, 0, 0);
   const sum = (rows: UsageRow[], f: (r: UsageRow) => number) => rows.reduce((a, r) => a + f(r), 0);
@@ -255,6 +260,8 @@ export default async function OpsPage({
             googleReady={googleConfigured()}
             personalReady={appConfigured("personal")}
           />
+
+          <Scorecard kpis={kpis} />
 
           <MailTuning lowConfidence={lowConfidence} recent={recentInflow} />
 

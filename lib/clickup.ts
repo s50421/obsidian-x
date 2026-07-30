@@ -75,6 +75,46 @@ export function isClickUpDone(type: string): boolean {
   return type === "closed" || type === "done";
 }
 
+// --- v4.2: notes sync-back ---------------------------------------------------
+// Owner: "if I can add notes to my ClickUp… these should be pulled back into
+// the brain including the status." Status already flows; this is the rest.
+
+export type ClickUpComment = {
+  id: string;
+  text: string;
+  user: string;
+  /** epoch ms */
+  date: number;
+};
+
+/** Comments on a task, oldest first. */
+export async function getClickUpComments(taskId: string): Promise<ClickUpComment[]> {
+  const j = await api<{
+    comments?: {
+      id: string;
+      comment_text?: string;
+      user?: { username?: string };
+      date?: string;
+    }[];
+  }>(`/task/${taskId}/comment`);
+  return (j?.comments ?? [])
+    .map((c) => ({
+      id: String(c.id),
+      text: (c.comment_text ?? "").trim(),
+      user: c.user?.username ?? "ClickUp",
+      date: Number(c.date ?? 0),
+    }))
+    .filter((c) => c.text)
+    .sort((a, b) => a.date - b.date);
+}
+
+/** A task's current description (the ClickUp-side notes field). */
+export async function getClickUpDescription(taskId: string): Promise<string | null> {
+  const j = await api<{ description?: string; text_content?: string }>(`/task/${taskId}`);
+  const text = (j?.text_content ?? j?.description ?? "").trim();
+  return text || null;
+}
+
 // Register (once) a team webhook that pings `endpoint` on task status changes.
 // Returns the webhook id + signing secret (store the secret to verify pings).
 export async function registerClickUpWebhook(

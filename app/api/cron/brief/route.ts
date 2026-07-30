@@ -19,6 +19,7 @@ import {
   type InflowRow,
 } from "@/lib/letter";
 import { pregenerateDrafts } from "@/lib/letter-drafts";
+import { projectActionItems } from "@/lib/task-projection";
 import {
   resolveOwnerTz,
   localHHMM,
@@ -187,11 +188,15 @@ export async function GET(req: Request) {
     buildPrepNotes(admin, owner.id, events),
   ]);
 
-  // Drafts for the mail that wants a reply. Skipped entirely on preview so a
-  // review pass costs nothing and writes no proposals.
+  // Drafts for the mail that wants a reply, and the ClickUp projection. Both
+  // are skipped entirely on preview so a review pass costs nothing and writes
+  // no proposals, tasks or spend.
   let drafted = new Set<string>();
+  let projection = null as Awaited<ReturnType<typeof projectActionItems>> | null;
   if (!preview) {
     drafted = await pregenerateDrafts(admin, owner.id, inflow as InflowRow[]);
+    // v4.2 B — today's action items ARE the board by the time the letter lands.
+    projection = await projectActionItems(admin, owner.id, actions);
   }
 
   const letter = composeLetter({
@@ -229,7 +234,7 @@ export async function GET(req: Request) {
       user_id: owner.id,
       action: BRIEF_SENT_ACTION,
       actor: "system",
-      detail: { ...letter.counts, tz, localDate, drafts: drafted.size },
+      detail: { ...letter.counts, tz, localDate, drafts: drafted.size, projection },
     });
   }
 
@@ -252,5 +257,6 @@ export async function GET(req: Request) {
     counts: letter.counts,
     coverage: letter.coverage,
     drafts: drafted.size,
+    projection,
   });
 }
