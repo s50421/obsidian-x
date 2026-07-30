@@ -188,7 +188,11 @@ test("demote rules cap a matching subject hard", () => {
   assert.equal(r.autoCreate, false, "a demoted message must never auto-create");
 });
 
-test("auto-create bar: strict AND of VIP, direct, and a real signal", () => {
+// The owner's definition (2026-07-29): "VIP is any mail that contains an action
+// item or requires a response that is not an advertisement or sale." The gate is
+// the ACTION, not the sender — so a named VIP is NOT required to auto-create.
+
+test("auto-create is gated on the ACTION, not on being a named VIP", () => {
   const s = deterministicSignals(VIP_QUESTION, ME, VIP, DEMOTE);
 
   assert.equal(
@@ -196,6 +200,23 @@ test("auto-create bar: strict AND of VIP, direct, and a real signal", () => {
     true,
     "VIP + direct + question + confident should auto-create"
   );
+
+  const stranger = deterministicSignals(
+    msg({ From: "Bob <bob@other.com>", To: ME, Subject: "Can you send this by Friday?" }),
+    ME,
+    VIP,
+    DEMOTE
+  );
+  assert.equal(
+    meetsAutoCreateBar(stranger, read({ question: true, deadline: true, importance: 0.9, confidence: 0.9 })),
+    true,
+    "a stranger asking me to do something by Friday IS an action item"
+  );
+});
+
+test("auto-create still refuses everything that isn't a confident, direct action", () => {
+  const s = deterministicSignals(VIP_QUESTION, ME, VIP, DEMOTE);
+
   assert.equal(
     meetsAutoCreateBar(s, read({ question: true, importance: 0.8, confidence: 0.4 })),
     false,
@@ -206,24 +227,96 @@ test("auto-create bar: strict AND of VIP, direct, and a real signal", () => {
     false,
     "high importance alone, with no deadline/question/money, must not auto-create"
   );
+  assert.equal(
+    meetsAutoCreateBar(s, read({ question: true, importance: 0.4, confidence: 1 })),
+    false,
+    "an action item the model thinks is unimportant must not auto-create"
+  );
 
-  const notVip = deterministicSignals(
-    msg({ From: "Bob <bob@other.com>", To: ME, Subject: "Can you send this by Friday?" }),
+  const ccd = deterministicSignals(
+    msg({ From: "Bob <bob@other.com>", To: "someone@else.com", Cc: ME, Subject: "by Friday?" }),
     ME,
     VIP,
     DEMOTE
   );
   assert.equal(
-    meetsAutoCreateBar(notVip, read({ question: true, deadline: true, importance: 1, confidence: 1 })),
+    meetsAutoCreateBar(ccd, read({ question: true, deadline: true, importance: 1, confidence: 1 })),
     false,
-    "a non-VIP must never auto-create, however urgent it looks"
+    "being cc'd is not being asked"
   );
 });
 
-test("a VIP writing directly is always read by the model", () => {
-  // Even if Gmail filed it under Promotions, don't skip the content pass.
-  const s = deterministicSignals(VIP_QUESTION, ME, VIP, DEMOTE);
-  assert.equal(canSkipContentPass(s), false);
+// "Canvas/class emails, Beate Manhart, V-Bank and similar should always surface."
+// All three send machine-generated mail carrying List-Unsubscribe, so the bulk
+// cap would have buried them — the owner's instruction silently not happening.
+
+const CLASS_NOTIFICATION = msg({
+  From: "Canvas <notifications@instructure.com>",
+  To: ME,
+  Subject: "New assignment posted: Problem Set 4",
+  "List-Unsubscribe": "<https://instructure.com/u>",
+});
+
+test("EXIT TEST: a named VIP always surfaces, even when the mail is bulk", () => {
+  const vipRules = { addresses: [], domains: ["instructure.com"], names: [] };
+  const s = deterministicSignals(CLASS_NOTIFICATION, ME, vipRules, DEMOTE);
+
+  assert.equal(s.bulk, true, "it really is bulk — List-Unsubscribe is present");
+  assert.equal(s.vip, true, "and the owner named the domain");
+
+  const r = scoreMail(s, read({ importance: 0.2, confidence: 0.9 }));
+  assert.ok(
+    r.score >= SURFACE_THRESHOLD,
+    `a named VIP must clear the threshold despite being bulk (got ${r.score})`
+  );
+  assert.equal(r.autoCreate, false, "surfacing is not the same as becoming a memory");
+});
+
+test("the bulk cap still applies to everyone the owner did NOT name", () => {
+  const s = deterministicSignals(CLASS_NOTIFICATION, ME, VIP, DEMOTE); // not a VIP here
+  const r = scoreMail(s, read({ importance: 1, deadline: true, confidence: 1 }));
+  assert.ok(r.score < SURFACE_THRESHOLD, `unnamed bulk must stay capped (got ${r.score})`);
+});
+
+test("an explicit demotion beats VIP status", () => {
+  const vipRules = { addresses: [], domains: ["instructure.com"], names: [] };
+  const demote = { addresses: [], domains: [], subjects: ["problem set"] };
+  const s = deterministicSignals(CLASS_NOTIFICATION, ME, vipRules, demote);
+
+  assert.equal(s.vip, true);
+  assert.equal(s.demoted, true);
+  const r = scoreMail(s, read({ importance: 1, confidence: 1 }));
+  assert.ok(r.score <= 10, `"never" must win over "always" (got ${r.score})`);
+  assert.equal(canSkipContentPass(s), true, "and a demoted VIP costs no model call");
+});
+
+test("a named VIP is always read by the model, bulk or not", () => {
+  const vipRules = { addresses: [], domains: ["instructure.com"], names: [] };
+  const s = deterministicSignals(CLASS_NOTIFICATION, ME, vipRules, DEMOTE);
+  assert.equal(
+    canSkipContentPass(s),
+    false,
+    "a guaranteed-to-surface message needs a real reason line, not 'not classified'"
+  );
+  assert.equal(canSkipContentPass(deterministicSignals(VIP_QUESTION, ME, VIP, DEMOTE)), false);
+});
+
+test("VIP name matching catches a person who mails from several addresses", () => {
+  const vipRules = { addresses: [], domains: [], names: ["beate manhart"] };
+  for (const from of [
+    "Beate Manhart <beate@example.com>",
+    "Beate Manhart <b.manhart@work.example>",
+  ]) {
+    const s = deterministicSignals(msg({ From: from, To: ME, Subject: "Hi" }), ME, vipRules, DEMOTE);
+    assert.equal(s.vip, true, `should match ${from}`);
+  }
+  const other = deterministicSignals(
+    msg({ From: "Manhart Group Marketing <ads@shop.example>", To: ME, Subject: "Sale" }),
+    ME,
+    vipRules,
+    DEMOTE
+  );
+  assert.equal(other.vip, false, "a partial surname match must not make everything VIP");
 });
 
 test("othersSpokeLast only fires when I am actually in the conversation", () => {

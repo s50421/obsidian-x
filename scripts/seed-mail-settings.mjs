@@ -33,9 +33,27 @@ const DEFAULTS = {
   // as not-addressed-to-me and sinks below the surface threshold.
   mail_identities: { addresses: [WORK, PERSONAL, FORWARD_ALIAS] },
   mail_streams: { "via-personal": PERSONAL },
-  // Fill these in with the owner's real list — see the note above about
-  // auto-create being gated on a VIP match.
-  mail_vip: { addresses: [], domains: [], names: [] },
+  // Owner's named "always surface" senders (2026-07-29). These are exempt from
+  // the bulk cap on purpose — Canvas, banks and schools all send with
+  // List-Unsubscribe, so capping them would mean "always surface" never
+  // actually happened. Everything else rides on the CONTENT rule instead
+  // ("an action item or a request for a response, that isn't an ad").
+  //
+  // `names` matches the From DISPLAY name, which is how a person who mails
+  // from several addresses gets caught without knowing any of them. Domains
+  // are more precise — add them as the real addresses become known.
+  mail_vip: {
+    addresses: [],
+    domains: [
+      "instructure.com", // Canvas LMS notifications
+    ],
+    names: [
+      "beate manhart",
+      "v-bank",
+      "vbank",
+      "canvas",
+    ],
+  },
   mail_demote: { addresses: [], domains: [], subjects: [] },
 };
 

@@ -10,7 +10,22 @@ import { parseAddresses, type GmailMessageMeta } from "@/lib/gmail";
 //   2. a thread awaiting my reply / where I owe a reply
 //   3. money, legal, or contract language
 //   4. direct-to-me, never CC'd or bulk
-// …on top of a settings-driven VIP sender list.
+//
+// …plus the owner's own definition of VIP, which is TWO rules, not one list:
+//   "VIP is any mail that contains an action item or requires a response that
+//    is not an advertisement or sale. Canvas/class emails, Beate Manhart,
+//    V-Bank and similar should always surface."
+//
+// So there are two independent routes to importance:
+//   (a) CONTENT — an action item or a request for a response, in mail that
+//       isn't marketing. This is the LLM pass plus the bulk/demote caps, and
+//       it's what gates auto-create; a named sender is NOT required.
+//   (b) SENDER — an explicitly named VIP always surfaces, and is deliberately
+//       exempt from the bulk cap. Canvas notifications and bank alerts all
+//       carry List-Unsubscribe; capping them would mean "always surface"
+//       silently never happened.
+// Surfacing and auto-creating stay separate decisions: a VIP's automated
+// notification appears in the brief but never becomes a memory on its own.
 //
 // Two layers on purpose. Deterministic signals (headers, VIP list, bulk
 // detection) run on EVERY message and cost nothing. The LLM pass is cheap but
@@ -382,8 +397,15 @@ export const MIN_CONFIDENCE = 0.5;
  * keeps "auto-create" compatible with propose-then-approve.
  */
 export function meetsAutoCreateBar(s: Signals, c: ContentRead): boolean {
+  // Automated, bulk, promotional or explicitly demoted mail never becomes an
+  // item — not even from a VIP. A VIP's Canvas notification should SURFACE in
+  // the brief (see the floor in scoreMail), but surfacing and becoming a
+  // memory are different decisions, and the second one is irreversible-ish.
   if (s.bulk || s.demoted || s.automated || s.promotionsLabel) return false;
-  if (!s.vip || !s.direct) return false;
+  if (!s.direct) return false;
+  // Owner's definition (2026-07-29): "VIP is any mail that contains an action
+  // item or requires a response that is not an advertisement or sale." So the
+  // gate is the ACTION, not the sender — a named VIP is no longer required.
   if (!(c.deadline || c.question || c.money)) return false;
   return c.importance >= 0.7 && c.confidence >= 0.7;
 }
@@ -432,11 +454,26 @@ export function scoreMail(s: Signals, c: ContentRead): Ranked {
   score += Math.round(c.importance * 25);
 
   // Caps, applied last so no combination of positives can lift a newsletter
-  // above a real message. A VIP who also sends a newsletter still gets capped —
-  // that is the correct behaviour: the newsletter isn't the VIP talking to me.
-  if (s.demoted) score = Math.min(score, 10);
-  if (s.bulk || s.promotionsLabel) score = Math.min(score, 25);
-  if (s.automated) score = Math.min(score, 35);
+  // above a real message.
+  //
+  // An explicit demotion always wins — the owner said "never", and that beats
+  // every other signal including VIP.
+  if (s.demoted) {
+    score = Math.min(score, 10);
+  } else {
+    // Bulk/automated caps apply only to senders the owner has NOT named. Naming
+    // a sender VIP is a deliberate statement that their mail matters even when
+    // it's machine-generated: Canvas/class notifications and bank alerts all
+    // carry List-Unsubscribe, and capping them would mean the owner's explicit
+    // "always surface these" silently never happened.
+    if (!s.vip) {
+      if (s.bulk || s.promotionsLabel) score = Math.min(score, 25);
+      if (s.automated) score = Math.min(score, 35);
+    }
+    // "Should always surface" taken literally: a named VIP that hasn't been
+    // demoted is guaranteed to clear the threshold, whatever the model thought.
+    if (s.vip) score = Math.max(score, SURFACE_THRESHOLD);
+  }
 
   score = Math.max(0, Math.min(100, score));
 
@@ -458,7 +495,11 @@ export function scoreMail(s: Signals, c: ContentRead): Ranked {
  * threshold given the caps above, so there is nothing to learn by classifying it.
  */
 export function canSkipContentPass(s: Signals): boolean {
-  if (s.vip && s.direct) return false; // always read a VIP writing to me directly
+  // Never skip a named VIP, even a bulk one. Their mail is guaranteed to
+  // surface, so the brief needs a real reason line for it — "bulk/automated,
+  // not classified" would be a useless thing to read at 6:30am. A demotion
+  // still short-circuits, since that mail is capped at 10 and never shown.
+  if (s.vip && !s.demoted) return false;
   return s.bulk || s.promotionsLabel || s.automated || s.demoted;
 }
 
