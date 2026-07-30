@@ -21,9 +21,17 @@ import { createClient } from "@supabase/supabase-js";
 
 const WORK = "david@manhartgroup.com";
 const PERSONAL = "davi.manhart@gmail.com";
+// A dedicated alias on the Workspace domain that delivers into WORK's mailbox.
+// Everything arriving here is forwarded personal mail by definition, which makes
+// the Gmail filter exact (deliveredto:) instead of guessing from To:/Cc:.
+const FORWARD_ALIAS = "obsidian-x-forward@manhartgroup.com";
 
 const DEFAULTS = {
-  mail_identities: { addresses: [WORK, PERSONAL] },
+  // FORWARD_ALIAS must be here: forwarded mail carries `Delivered-To: <alias>`,
+  // and that header is what rescues the "direct to me" signal when the original
+  // To: is the personal address. Omit it and the whole forwarded stream reads
+  // as not-addressed-to-me and sinks below the surface threshold.
+  mail_identities: { addresses: [WORK, PERSONAL, FORWARD_ALIAS] },
   mail_streams: { "via-personal": PERSONAL },
   // Fill these in with the owner's real list — see the note above about
   // auto-create being gated on a VIP match.

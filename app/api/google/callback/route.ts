@@ -86,6 +86,15 @@ export async function GET(req: Request) {
       error: null,
       detail: { connected_at: new Date().toISOString() },
     });
+    // Also flip the PARENT row. Without this the panel keeps reading
+    // "Gmail — not connected" until the first sync tick, which is both wrong
+    // and the exact kind of misreporting the coverage panel exists to avoid.
+    await reportSourceStatus(admin, user.id, {
+      source: "gmail",
+      label: "Gmail",
+      connected: true,
+      error: null,
+    });
     await logAudit(admin, {
       user_id: user.id,
       action: "gmail_connected",
