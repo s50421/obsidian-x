@@ -3,6 +3,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { ownerEmail } from "@/lib/owner";
 import { captureText } from "@/lib/capture-core";
 import { reportSourceStatus } from "@/lib/source-status";
+import { bearerEquals, secureEquals } from "@/lib/secure-compare";
 import { logAudit } from "@/lib/audit";
 
 export const runtime = "nodejs";
@@ -40,9 +41,13 @@ type Body = {
 export async function POST(req: Request) {
   const secret = process.env.SHORTCUT_TOKEN;
   const url = new URL(req.url);
-  const auth = req.headers.get("authorization") ?? "";
-  const token = (auth.startsWith("Bearer ") ? auth.slice(7) : "") || url.searchParams.get("token") || "";
-  if (!secret || token !== secret) {
+  // Prefer the header. The `?token=` fallback is kept only because the existing
+  // iOS Shortcut uses it — but a secret in a query string ends up in access
+  // logs, proxy logs and Referer headers, so header auth is the one to use for
+  // anything new (the Granola agent already does).
+  const viaHeader = bearerEquals(req.headers.get("authorization"), secret);
+  const viaQuery = secureEquals(url.searchParams.get("token"), secret);
+  if (!secret || (!viaHeader && !viaQuery)) {
     return NextResponse.json({ error: "forbidden" }, { status: 401 });
   }
 

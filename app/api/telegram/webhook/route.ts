@@ -12,6 +12,7 @@ import { applyProposal, proposeClickUpTaskForItem, rejectProposalById } from "@/
 import { clickupConfigured } from "@/lib/clickup";
 import { projectNewCaptures } from "@/lib/task-projection";
 import { logAudit } from "@/lib/audit";
+import { secureEquals } from "@/lib/secure-compare";
 import { reportSourceStatus } from "@/lib/source-status";
 import { JUNK_ARCHIVE_SCORE } from "@/lib/title-standard.mjs";
 import { senderName, type InflowRow as LetterInflowRow } from "@/lib/letter";
@@ -79,7 +80,7 @@ const JUNK_FLAG_SCORE = JUNK_ARCHIVE_SCORE;
 export async function POST(req: Request) {
   // 1. Verify Telegram's secret token.
   const secret = process.env.TELEGRAM_WEBHOOK_SECRET;
-  if (!secret || req.headers.get("x-telegram-bot-api-secret-token") !== secret) {
+  if (!secureEquals(req.headers.get("x-telegram-bot-api-secret-token"), secret)) {
     return NextResponse.json({ error: "forbidden" }, { status: 401 });
   }
 

@@ -5,6 +5,7 @@ import { captureText } from "@/lib/capture-core";
 import { clickupConfigured } from "@/lib/clickup";
 import { proposeClickUpTaskForItem, notifyClickUpProposal } from "@/lib/proposals";
 import { reportSourceStatus } from "@/lib/source-status";
+import { secureEquals } from "@/lib/secure-compare";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -40,7 +41,7 @@ export async function POST(req: Request) {
   const url = new URL(req.url);
   const token = url.searchParams.get("token");
   const secret = process.env.INBOUND_EMAIL_SECRET;
-  if (!secret || token !== secret) {
+  if (!secret || !secureEquals(token, secret)) {
     return NextResponse.json({ error: "forbidden" }, { status: 401 });
   }
 
