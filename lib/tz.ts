@@ -15,10 +15,24 @@ import { getCalendarUrls } from "@/lib/calendar";
 export const FALLBACK_TZ = "America/Vancouver";
 export const SETTINGS_KEY_TZ_OVERRIDE = "tz_override";
 
-// The morning letter's target window (inclusive) — 6:30am local, +/- 45min to
-// tolerate the hourly cron's :30 firing granularity plus retry slack.
+// The morning letter's delivery window (inclusive).
+//
+// This is a FLOOR plus a late backstop, not a narrow slot, and that is a
+// correction born from a real miss (2026-07-30: no letter arrived at all).
+// The window was 06:15-07:15 — sixty minutes — on the assumption that the
+// pinger fires every 15 minutes as its schedule requests. It does not:
+// GitHub deprioritises scheduled workflows on the free tier and the observed
+// gaps are 1h40m to 3h25m. That morning the ticks landed at 05:54 and 08:06
+// local, straddling the entire window, so the letter silently never sent.
+// A 60-minute target against ~150-minute gaps lands maybe 40% of mornings.
+//
+// So: send on the FIRST tick at or after 06:15 local, and keep accepting until
+// late morning. Delivery drifts (06:15-08:30 in practice) but it arrives —
+// and a letter at 8am is worth incomparably more than no letter at 6:30.
+// Idempotency is unaffected: the `brief_sent` marker keyed on the owner's
+// local date still guarantees exactly one send per day.
 export const BRIEF_WINDOW_START = "06:15";
-export const BRIEF_WINDOW_END = "07:15";
+export const BRIEF_WINDOW_END = "11:00";
 
 // ---- IANA validation ---------------------------------------------------------
 

@@ -40,9 +40,18 @@ const BRIEF_SENT_ACTION = "brief_sent";
 // fixed). This route is the plumbing around that: the timezone gate, the
 // once-a-day marker, data loading, drafts, and delivery.
 //
-// Timing: still fired repeatedly by the GitHub Actions pinger and self-gated to
-// ~6:30am LOCAL. Only the first in-window tick of the owner's local date
-// actually sends.
+// Timing — TWO independent triggers, because one wasn't enough:
+//   1. Vercel Cron, once daily at 13:20 UTC. That's 06:20 in the owner's home
+//      timezone (America/Vancouver), so it lands squarely in the window
+//      whenever they're home. Reliable, but fixed-UTC, so it drifts out of the
+//      window as soon as they travel.
+//   2. The GitHub Actions pinger, all day. Timezone-proof, but its real firing
+//      gaps are 1h40m-3h25m on the free tier.
+// Neither alone is sufficient: (1) misses when travelling, (2) missed the
+// entire 60-minute window on 2026-07-30 and no letter arrived. Together with
+// the widened window (lib/tz.ts) delivery is effectively guaranteed, and the
+// `brief_sent` marker keyed on the owner's LOCAL date means the two triggers
+// can never produce two letters.
 //
 //   ?dry=1     — would it fire? (no build, no send)
 //   ?preview=1 — build the real letter and return it WITHOUT sending or
@@ -234,7 +243,9 @@ export async function GET(req: Request) {
       user_id: owner.id,
       action: BRIEF_SENT_ACTION,
       actor: "system",
-      detail: { ...letter.counts, tz, localDate, drafts: drafted.size, projection },
+      // localTime is recorded so delivery punctuality is measurable rather
+      // than assumed — the 2026-07-30 miss was invisible until it was looked for.
+      detail: { ...letter.counts, tz, localDate, localTime, drafts: drafted.size, projection },
     });
   }
 

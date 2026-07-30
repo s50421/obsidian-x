@@ -23,8 +23,13 @@ const DECK_URL = "https://obsidian.manhartgroup.com/deck";
 // with {skipped:true}. Because the gate re-resolves tz on every tick, this is
 // correct across a timezone change mid-week (e.g. PST -> CET) the same way
 // the brief cron is — no once-a-day UTC fixed-time gap.
+// Floor + late backstop, for the same reason the brief's window was widened
+// (see lib/tz.ts): the pinger's real gaps are 1h40m-3h25m, so a 60-minute slot
+// gets skipped outright on most days. Send on the first tick after 20:45 local
+// and keep accepting until just before midnight — the `deck_nudge_sent` marker
+// still guarantees one per local date.
 const WINDOW_START = "20:45";
-const WINDOW_END = "21:45";
+const WINDOW_END = "23:30";
 
 function inWindow(hhmm: string): boolean {
   const toMin = (s: string) => {

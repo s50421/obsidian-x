@@ -80,18 +80,18 @@ export async function projectActionItems(
   userId: string,
   actions: ActionItem[]
 ): Promise<ProjectionResult> {
+  // Read the dial FIRST. Reporting "off" on the nothing-to-do path would be a
+  // false statement about how the system is configured — the kind of small
+  // ops-surface lie that later costs an hour of debugging the wrong thing.
+  const mode = clickupConfigured() ? await projectionMode(admin, userId) : "off";
   const result: ProjectionResult = {
-    mode: "off",
+    mode,
     considered: actions.length,
     proposed: 0,
     created: 0,
     skipped: 0,
   };
-  if (!clickupConfigured() || !actions.length) return result;
-
-  const mode = await projectionMode(admin, userId);
-  result.mode = mode;
-  if (mode === "off") return result;
+  if (mode === "off" || !actions.length) return result;
 
   const ids = actions.map((a) => a.id);
 
