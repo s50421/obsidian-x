@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Obsidian-X cron pinger — LaunchAgent for the always-on Mac mini.
+
+  A LaunchAgent (not a LaunchDaemon) on purpose: the mini also runs Claude with
+  the Granola connector, which needs a logged-in GUI session anyway. Pair this
+  with automatic login so a reboot brings everything back by itself.
+
+  StartInterval 900 = every 15 minutes. Unlike GitHub's free scheduled runners,
+  launchd actually honours this.
+
+  Install to ~/Library/LaunchAgents/ — see ops/macmini/README.md
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.manhartgroup.obsidianx.cron</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>REPLACE_WITH_HOME/.obsidian-x/obx-cron-ping.sh</string>
+    </array>
+
+    <key>StartInterval</key>
+    <integer>900</integer>
+
+    <!-- Fire once as soon as the agent loads (login / reboot), so a restart
+         doesn't leave a 15-minute hole. -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- If the machine was asleep or off when a tick was due, run it on wake
+         rather than skipping the interval entirely. -->
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Minute</key><integer>15</integer></dict>
+        <dict><key>Minute</key><integer>30</integer></dict>
+        <dict><key>Minute</key><integer>45</integer></dict>
+    </array>
+
+    <key>StandardOutPath</key>
+    <string>REPLACE_WITH_HOME/.obsidian-x/launchd.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>REPLACE_WITH_HOME/.obsidian-x/launchd.err.log</string>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>
