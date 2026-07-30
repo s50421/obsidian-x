@@ -12,6 +12,8 @@ import { applyProposal, rejectProposalById } from "@/lib/proposals";
 import { logAudit } from "@/lib/audit";
 import { reportSourceStatus } from "@/lib/source-status";
 import { JUNK_ARCHIVE_SCORE } from "@/lib/title-standard.mjs";
+import { senderName, type InflowRow as LetterInflowRow } from "@/lib/letter";
+import { generateDraft, loadDrafts } from "@/lib/letter-drafts";
 import { logLlmUsage } from "@/lib/usage";
 import { sendMessage, answerCallbackQuery, editMessageText } from "@/lib/telegram";
 import {
@@ -244,7 +246,21 @@ async function handleCallback(
   userId: string,
   cb: TgCallback
 ): Promise<void> {
-  const [action, id] = (cb.data ?? "").split(":");
+  const [action, id, extra] = (cb.data ?? "").split(":");
+
+  // v4.2 — the daily letter's buttons.
+  if (action === "mdraft" && id) {
+    await showMailDraft(admin, userId, id, cb);
+    return;
+  }
+  if (action === "mdone" && id) {
+    await markInflowHandled(admin, userId, id, cb);
+    return;
+  }
+  if (action === "lrate" && id) {
+    await rateLetter(admin, userId, id, extra ?? "", cb);
+    return;
+  }
 
   if (action === "save" && id) {
     await approveCaptureProposal(admin, userId, id, cb);
@@ -463,6 +479,111 @@ async function captureAndSummarize(
       })
       .join("\n") || "🧠 Saved.";
   return { outcome, summary };
+}
+
+// ---- v4.2 letter buttons ------------------------------------------------------
+
+// Show the reply draft for a piece of overnight mail. Pre-generated at letter
+// time where possible; generated on demand otherwise, so the button always
+// works even when the morning budget ran out. Never sends — the draft comes
+// back as text to copy (propose-approve law).
+async function showMailDraft(
+  admin: SupabaseClient,
+  userId: string,
+  inflowId: string,
+  cb: TgCallback
+): Promise<void> {
+  const { data: row } = await admin
+    .from("inflow_events")
+    .select("id,subject,sender,snippet,ranked_score,ranked_reason,item_id,account")
+    .eq("id", inflowId)
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (!row) {
+    await answerCallbackQuery(cb.id, "That message is gone");
+    return;
+  }
+
+  const existing = await loadDrafts(admin, userId, [inflowId]);
+  let draft = existing.get(inflowId)?.draft ?? null;
+
+  if (!draft) {
+    await answerCallbackQuery(cb.id, "Drafting…");
+    draft = await generateDraft(admin, userId, row as LetterInflowRow);
+  } else {
+    await answerCallbackQuery(cb.id, "Draft ready");
+  }
+
+  if (!draft) {
+    await sendMessage("Couldn't draft that one — open the thread instead.", { parse_mode: "plain" });
+    return;
+  }
+
+  await sendMessage(
+    `📝 Draft reply to ${senderName(row.sender as string | null)}\n` +
+      `Re: ${row.subject ?? "(no subject)"}\n\n` +
+      `${stripMarkdown(draft)}\n\n` +
+      `(nothing sent — copy and edit as you like)`,
+    { parse_mode: "plain" }
+  );
+}
+
+// "✓ Handled" on a letter line: the owner has dealt with it, so it must not
+// come back tomorrow.
+async function markInflowHandled(
+  admin: SupabaseClient,
+  userId: string,
+  inflowId: string,
+  cb: TgCallback
+): Promise<void> {
+  const { data } = await admin
+    .from("inflow_events")
+    .update({ state: "actioned" })
+    .eq("id", inflowId)
+    .eq("user_id", userId)
+    .select("subject")
+    .maybeSingle();
+  await answerCallbackQuery(cb.id, data ? "✓ Handled" : "Already handled");
+  if (data) {
+    await logAudit(admin, {
+      user_id: userId,
+      action: "letter_item_handled",
+      actor: "user",
+      detail: { inflow_id: inflowId },
+    });
+  }
+}
+
+// 👍/👎 on the letter — the only non-guesswork signal behind KPI #1 (brief
+// accuracy, target >= 9 of 10 mornings). Keyed on the owner's LOCAL date so one
+// rating per letter, and re-rating overwrites rather than double-counting.
+async function rateLetter(
+  admin: SupabaseClient,
+  userId: string,
+  direction: string,
+  localDate: string,
+  cb: TgCallback
+): Promise<void> {
+  const up = direction === "up";
+  await admin
+    .from("audit")
+    .delete()
+    .eq("user_id", userId)
+    .eq("action", "letter_rated")
+    .eq("detail->>localDate", localDate);
+  await logAudit(admin, {
+    user_id: userId,
+    action: "letter_rated",
+    actor: "user",
+    detail: { localDate, rating: up ? "up" : "down" },
+  });
+  await answerCallbackQuery(cb.id, up ? "Noted — thanks" : "Noted — what was off?");
+  if (!up) {
+    await sendMessage(
+      "What did I get wrong? Reply and I'll save it as a note for tuning.",
+      { parse_mode: "plain" }
+    );
+  }
 }
 
 async function runAsk(userId: string, question: string): Promise<void> {

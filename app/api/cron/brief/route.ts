@@ -2,16 +2,23 @@ import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { ownerEmail } from "@/lib/owner";
 import { isCronAuthorized } from "@/lib/cron";
-import { checkTelegramHealth, sendMessage, type InlineKeyboard } from "@/lib/telegram";
-import { detectConflicts, fetchUpcomingEventsWithStatus } from "@/lib/calendar";
+import { checkTelegramHealth, sendMessage } from "@/lib/telegram";
+import { fetchUpcomingEventsWithStatus, type CalEvent } from "@/lib/calendar";
 import { logAudit } from "@/lib/audit";
+import { embedText } from "@/lib/embed";
 import {
-  coverageFooter,
   ensureDeclaredSources,
   loadSourceStatus,
   reportSourceStatus,
 } from "@/lib/source-status";
-import { MIN_CONFIDENCE, SURFACE_THRESHOLD } from "@/lib/rank-mail";
+import {
+  composeLetter,
+  eventKey,
+  loadActionItems,
+  loadInflow,
+  type InflowRow,
+} from "@/lib/letter";
+import { pregenerateDrafts } from "@/lib/letter-drafts";
 import {
   resolveOwnerTz,
   localHHMM,
@@ -27,19 +34,22 @@ export const maxDuration = 60;
 
 const BRIEF_SENT_ACTION = "brief_sent";
 
-function timeFmt(tz: string, d: Date): string {
-  return new Intl.DateTimeFormat("en-US", {
-    timeZone: tz,
-    hour: "numeric",
-    minute: "2-digit",
-  }).format(d);
-}
+// v4.2 — THE DAILY LETTER. The brief is no longer a recap; it's a decision
+// queue (see lib/letter.ts for the section contract and why the order is
+// fixed). This route is the plumbing around that: the timezone gate, the
+// once-a-day marker, data loading, drafts, and delivery.
+//
+// Timing: still fired repeatedly by the GitHub Actions pinger and self-gated to
+// ~6:30am LOCAL. Only the first in-window tick of the owner's local date
+// actually sends.
+//
+//   ?dry=1     — would it fire? (no build, no send)
+//   ?preview=1 — build the real letter and return it WITHOUT sending or
+//                recording. This is how the letter gets reviewed.
+//   ?force=1   — send now, bypassing the window and the once-a-day gate, and
+//                deliberately do NOT record the marker so the real 6:30am
+//                delivery still happens.
 
-// Has the letter already gone out for this owner's current LOCAL calendar
-// date? Recorded as `detail.localDate` on a `brief_sent` audit row (see the
-// write-side at the bottom of GET) — this is what makes the hourly gate
-// idempotent: many cron ticks fall inside the 06:15-07:15 window, but only
-// the first one sends.
 async function alreadySentForLocalDate(
   admin: SupabaseClient,
   ownerId: string,
@@ -55,15 +65,43 @@ async function alreadySentForLocalDate(
   return !!data && data.length > 0;
 }
 
-// Morning brief: next 24h of calendar events (all calendars) + items due soon,
-// pushed to Telegram — timed to land at 6:30am wherever the owner is (v4.0 W4).
-//
-// Triggered every hour on the half-hour by Vercel Cron (`30 * * * *`); this
-// handler is the gate: it resolves the owner's current timezone, and only
-// actually builds + sends the letter when local time falls in a window around
-// 6:30am AND it hasn't already sent today (owner's local date). Every other
-// tick exits fast with {skipped:true}. `?dry=1` reports what WOULD happen
-// without sending or recording anything.
+/**
+ * A one-line "you already know something about this" note per meeting.
+ *
+ * Deliberately conservative: only a strong semantic hit counts, and only the
+ * single best one is shown. A weak association printed under a meeting is
+ * noise at 6:30am, and noise is what makes a letter stop being read.
+ */
+const PREP_MIN_SIMILARITY = 0.55;
+const PREP_MAX_EVENTS = 4;
+
+async function buildPrepNotes(
+  admin: SupabaseClient,
+  userId: string,
+  events: CalEvent[]
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const soon = events.filter((e) => !e.allDay).slice(0, PREP_MAX_EVENTS);
+  for (const e of soon) {
+    try {
+      const embedding = await embedText(e.summary, userId);
+      const { data } = await admin.rpc("match_items_v2", {
+        query_embedding: embedding,
+        query_text: e.summary,
+        match_count: 2,
+        owner: userId,
+      });
+      const hit = (data ?? [])[0] as { title?: string; similarity?: number } | undefined;
+      if (hit?.title && Number(hit.similarity ?? 0) >= PREP_MIN_SIMILARITY) {
+        out.set(eventKey(e), `you have notes: ${hit.title}`);
+      }
+    } catch {
+      // prep notes are a nicety — never let one failure cost the letter
+    }
+  }
+  return out;
+}
+
 export async function GET(req: Request) {
   if (!isCronAuthorized(req)) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
@@ -71,14 +109,7 @@ export async function GET(req: Request) {
 
   const params = new URL(req.url).searchParams;
   const dry = params.get("dry") === "1";
-  // Owner-triggered TEST send: bypass the 06:15-07:15 window AND the once-a-day
-  // gate, and do NOT record the brief_sent marker — so it can be fired anytime,
-  // repeatedly, without suppressing the real 6:30am-local delivery. Still
-  // CRON_SECRET-gated (same as the cron caller).
   const force = params.get("force") === "1";
-  // Build the full letter and return it WITHOUT sending, recording, or mutating
-  // inflow state. `dry=1` only answers "would it fire?"; this answers "what
-  // would it say?" — which is what verifying the coverage footer needs.
   const preview = params.get("preview") === "1";
 
   const admin = createAdminClient();
@@ -87,9 +118,6 @@ export async function GET(req: Request) {
   const owner = list.users.find((u) => (u.email ?? "").toLowerCase() === ownerEmail());
   if (!owner) return NextResponse.json({ error: "owner not found" }, { status: 500 });
 
-  // Resolve the owner's timezone (settings override -> calendar inference ->
-  // America/Vancouver). resolveOwnerTz is designed to never throw; BRIEF_TZ is
-  // now only a last-resort fallback if resolution totally fails unexpectedly.
   let tz: string;
   try {
     tz = await resolveOwnerTz(admin, owner.id);
@@ -116,8 +144,7 @@ export async function GET(req: Request) {
     }
   }
 
-  // v4.1 — the calendar fetch now reports per-feed health, so "20/20" in the
-  // coverage footer is a measurement rather than a claim.
+  // ---- coverage (v4.1) --------------------------------------------------------
   const { events, calendars } = await fetchUpcomingEventsWithStatus(24);
   const calOk = calendars.filter((c) => c.ok).length;
   const calFailed = calendars.filter((c) => !c.ok);
@@ -127,10 +154,7 @@ export async function GET(req: Request) {
     connected: calendars.length > 0,
     events24h: events.length,
     error: calFailed.length
-      ? `${calFailed.length} of ${calendars.length} failed: ${calFailed
-          .map((c) => c.name)
-          .slice(0, 3)
-          .join(", ")}`
+      ? `${calFailed.length} of ${calendars.length} failed: ${calFailed.map((c) => c.name).slice(0, 3).join(", ")}`
       : null,
     detail: { total: calendars.length, ok: calOk },
   });
@@ -145,109 +169,7 @@ export async function GET(req: Request) {
     });
   }
 
-  const in24 = new Date(now.getTime() + 24 * 3600 * 1000).toISOString();
-  const { data: dueItems } = await admin
-    .from("items")
-    .select("id,title,due_at")
-    .eq("user_id", owner.id)
-    .eq("status", "open")
-    .is("valid_to", null)
-    .not("due_at", "is", null)
-    .lte("due_at", in24)
-    .order("due_at");
-
-  const dateStr = new Intl.DateTimeFormat("en-US", {
-    timeZone: tz,
-    weekday: "long",
-    month: "short",
-    day: "numeric",
-  }).format(now);
-
-  // Group under day labels (Today / Tomorrow / weekday) so a "next 24h" list that
-  // spans midnight reads in order instead of looking shuffled.
-  const tomorrowStr = localDateStr(tz, new Date(now.getTime() + 24 * 3600 * 1000));
-  const dayLabelFor = (start: Date): string => {
-    const d = localDateStr(tz, start);
-    if (d === localDate) return "Today";
-    if (d === tomorrowStr) return "Tomorrow";
-    return new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "long" }).format(start);
-  };
-  const sortedEvents = [...events].sort((a, b) => a.start.getTime() - b.start.getTime());
-  const dayGroups: { label: string; items: typeof sortedEvents }[] = [];
-  for (const e of sortedEvents) {
-    const label = dayLabelFor(e.start);
-    const last = dayGroups[dayGroups.length - 1];
-    if (last && last.label === label) last.items.push(e);
-    else dayGroups.push({ label, items: [e] });
-  }
-  const eventsText = events.length
-    ? dayGroups
-        .map(
-          (g) =>
-            `*${g.label}*\n` +
-            g.items
-              .map(
-                (e) =>
-                  `• ${e.allDay ? "All day" : timeFmt(tz, e.start)} — ${e.summary}${e.location ? ` @ ${e.location}` : ""}  _(${e.calendar})_`
-              )
-              .join("\n")
-        )
-        .join("\n\n")
-    : "_nothing scheduled_";
-
-  const due = dueItems ?? [];
-  const dueText = due.length
-    ? due.map((d) => `• ${d.title}${d.due_at ? ` _(due ${d.due_at.slice(0, 10)})_` : ""}`).join("\n")
-    : "_nothing due_";
-
-  // v4.1 — overnight mail that cleared BOTH the surface threshold and the
-  // confidence bar. Low-confidence rankings deliberately never appear here;
-  // they go to /ops for tuning (no-half-baked law).
-  const { data: mailRows } = await admin
-    .from("inflow_events")
-    .select("id,subject,sender,ranked_score,ranked_reason,item_id")
-    .eq("user_id", owner.id)
-    .eq("source", "gmail")
-    .in("state", ["new", "actioned"])
-    .gte("ts", new Date(now.getTime() - 24 * 3600 * 1000).toISOString())
-    .gte("ranked_score", SURFACE_THRESHOLD)
-    .order("ranked_score", { ascending: false })
-    .limit(20);
-
-  const mail = (mailRows ?? []).filter(
-    (m) => Number((m.ranked_reason as { confidence?: number })?.confidence ?? 0) >= MIN_CONFIDENCE
-  );
-  const mailText = mail.length
-    ? mail
-        .slice(0, 8)
-        .map((m) => {
-          const from = String(m.sender ?? "").replace(/\s*<[^>]+>\s*/, "").trim() || "unknown";
-          const why = ((m.ranked_reason as { signals?: string[] })?.signals ?? [])
-            .slice(0, 2)
-            .join(", ");
-          return `• *${from}* — ${m.subject ?? "(no subject)"}${why ? ` _(${why})_` : ""}`;
-        })
-        .join("\n")
-    : "_nothing that needs you_";
-
-  // Overlapping events — data only in v4.1; the letter formats these in v4.2.
-  const conflicts = detectConflicts(events);
-  const conflictText = conflicts.length
-    ? "\n\n" +
-      `*⚠ Overlaps (${conflicts.length}):*\n` +
-      conflicts
-        .slice(0, 5)
-        .map((c) => `• ${c.a.summary} ↔ ${c.b.summary}`)
-        .join("\n")
-    : "";
-
-  // The coverage footer — the completeness law made visible. A source that
-  // failed to sync shows ⚠ here rather than quietly vanishing from the brief.
   await ensureDeclaredSources(admin, owner.id);
-
-  // Push sources can't be judged by "did anything arrive?" — a quiet day is not
-  // a broken channel. Probe Telegram for real, and treat forward-to-brain as
-  // wired once it has ever delivered (the Cloudflare Worker offers no probe).
   const tgHealth = await checkTelegramHealth();
   await reportSourceStatus(admin, owner.id, {
     source: "telegram",
@@ -256,74 +178,79 @@ export async function GET(req: Request) {
     error: tgHealth.error,
   });
 
-  const statusRows = await loadSourceStatus(admin, owner.id);
-  const footer = coverageFooter(statusRows, now.getTime());
+  // ---- the letter's contents --------------------------------------------------
+  const since = new Date(now.getTime() - 24 * 3600 * 1000);
+  const [inflow, actions, statusRows, prep] = await Promise.all([
+    loadInflow(admin, owner.id, since),
+    loadActionItems(admin, owner.id, tz, now),
+    loadSourceStatus(admin, owner.id),
+    buildPrepNotes(admin, owner.id, events),
+  ]);
 
-  const brief =
-    `☀️ *Morning brief — ${dateStr}*\n\n` +
-    `*Next 24h (${events.length}):*\n${eventsText}${conflictText}\n\n` +
-    `*Due soon (${due.length}):*\n${dueText}\n\n` +
-    `*Overnight mail (${mail.length}):*\n${mailText}\n\n` +
-    `— — —\n_Coverage: ${footer}_`;
+  // Drafts for the mail that wants a reply. Skipped entirely on preview so a
+  // review pass costs nothing and writes no proposals.
+  let drafted = new Set<string>();
+  if (!preview) {
+    drafted = await pregenerateDrafts(admin, owner.id, inflow as InflowRow[]);
+  }
 
-  // One ✓ Done button per due item — tap to complete straight from the brief.
-  const reply_markup: InlineKeyboard | undefined = due.length
-    ? {
-        inline_keyboard: due.map((d) => [
-          { text: `✓ ${d.title.slice(0, 40)}`, callback_data: `done:${d.id}` },
-        ]),
-      }
-    : undefined;
+  const letter = composeLetter({
+    tz,
+    now,
+    events,
+    statusRows,
+    inflow,
+    actions,
+    prep,
+    draftedInflowIds: drafted,
+  });
 
   if (preview) {
     return NextResponse.json({
       preview: true,
       sent: false,
-      events: events.length,
-      due: due.length,
-      mail: mail.length,
-      conflicts: conflicts.length,
-      calendars: { total: calendars.length, ok: calOk, failed: calFailed.map((c) => c.name) },
-      coverage: footer,
       tz,
       localTime,
-      brief,
+      counts: letter.counts,
+      coverage: letter.coverage,
+      calendars: { total: calendars.length, ok: calOk, failed: calFailed.map((c) => c.name) },
+      buttons: letter.keyboard?.inline_keyboard.flat().map((b) => b.text) ?? [],
+      letter: letter.text,
     });
   }
 
-  await sendMessage(brief, { reply_markup });
-  // A forced test send is not the daily delivery: don't write the brief_sent
-  // marker, so the real 6:30am-local send still fires and tests stay repeatable.
+  // Plain text on purpose: the letter carries subjects and sender names the
+  // owner never wrote, and one stray asterisk would break Markdown parsing for
+  // the whole message.
+  await sendMessage(letter.text, { parse_mode: "plain", reply_markup: letter.keyboard });
+
   if (!force) {
     await logAudit(admin, {
       user_id: owner.id,
       action: BRIEF_SENT_ACTION,
       actor: "system",
-      detail: { events: events.length, due: due.length, mail: mail.length, tz, localDate },
+      detail: { ...letter.counts, tz, localDate, drafts: drafted.size },
     });
   }
 
-  // Mark surfaced mail so it isn't re-listed tomorrow morning.
-  if (mail.length) {
+  // Mark what was shown so tomorrow's letter doesn't repeat it. Items that
+  // became real items keep their own state.
+  if (letter.surfacedInflowIds.length) {
     await admin
       .from("inflow_events")
       .update({ state: "surfaced" })
-      .in(
-        "id",
-        mail.filter((m) => !m.item_id).map((m) => m.id)
-      );
+      .eq("user_id", owner.id)
+      .eq("state", "new")
+      .in("id", letter.surfacedInflowIds);
   }
 
   return NextResponse.json({
     ok: true,
     forced: force,
-    events: events.length,
-    due: due.length,
-    mail: mail.length,
-    conflicts: conflicts.length,
-    coverage: footer,
     tz,
     localTime,
-    brief,
+    counts: letter.counts,
+    coverage: letter.coverage,
+    drafts: drafted.size,
   });
 }
