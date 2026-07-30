@@ -64,6 +64,34 @@ body {
   color: var(--color-ink);
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
+
+  /* v4.0.1 — THE top safe-area inset, applied once for the whole app.
+     The installed PWA draws edge-to-edge (viewport-fit=cover +
+     apple-mobile-web-app-status-bar-style: black-translucent), so without this
+     every screen starts underneath the clock and the notch. Doing it here
+     rather than per-screen is deliberate: a screen added later inherits the fix
+     instead of having to remember it. Resolves to 0 outside standalone, so
+     desktop and in-browser rendering are untouched. */
+  padding-top: env(safe-area-inset-top);
+}
+
+/* Padding alone only fixes the resting position — content would still scroll UP
+   into the notch area, and with a translucent status bar there is no backdrop to
+   keep the clock legible. This opaque strip sits exactly over the inset and
+   masks whatever scrolls beneath it. Zero-height (invisible) when there's no
+   inset. Above every app layer: the tab bar (z-50), the deck's action row
+   (z-70) and the inspector sheet (z-60) all live at or below the bottom of the
+   screen, so nothing legitimate is hidden by it. */
+body::before {
+  content: "";
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: env(safe-area-inset-top);
+  background: var(--color-base);
+  z-index: 90;
+  pointer-events: none;
 }
 
 /* iPhone feel: no grey flash on tap, no accidental text selection on controls,

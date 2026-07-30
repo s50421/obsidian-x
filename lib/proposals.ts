@@ -4,7 +4,7 @@ import { createClickUpTask } from "@/lib/clickup";
 import { reprojectItemToVault } from "@/lib/vault-sync";
 import { logAudit } from "@/lib/audit";
 import { embedText } from "@/lib/embed";
-import { writeVaultNote } from "@/lib/vault";
+import { writeVaultNote, deleteVaultNote } from "@/lib/vault";
 import {
   cleanTitle,
   mergeTags,
@@ -484,6 +484,178 @@ async function applySplit(
 }
 
 // Reject a pending proposal. Returns true if it was pending and is now rejected.
+/* ---------------------------------------------------------------------------
+   v4.0.1 item 3 — REAL reversal of an applied import proposal.
+
+   The deck's undo used to flip the proposal row back to `pending` and stop
+   there, leaving the item write in place. That is worse than having no undo:
+   the toast says "Undone", the title stays changed, and the owner has no reason
+   to doubt it. The brief's instruction was "honesty over fake undo" — either
+   reverse it for real or drop the affordance.
+
+   Reversing it for real turned out to be reachable: applyRetitle and applySplit
+   both already write a complete `before` block into the audit trail, precisely
+   so this would be possible. These read it back.
+   --------------------------------------------------------------------------- */
+
+type RetitleBefore = {
+  title: string | null;
+  type: string;
+  tags: string[];
+  due_at: string | null;
+  entities: { name: string; kind: string }[];
+};
+
+/** The audit row an apply left behind, newest first. */
+async function loadApplyAudit(
+  admin: SupabaseClient,
+  userId: string,
+  proposalId: string,
+  action: "retitle_applied" | "split_applied"
+): Promise<Record<string, unknown> | null> {
+  const { data } = await admin
+    .from("audit")
+    .select("detail")
+    .eq("user_id", userId)
+    .eq("action", action)
+    .eq("detail->>proposal_id", proposalId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  return (data?.detail as Record<string, unknown> | undefined) ?? null;
+}
+
+async function markPendingAgain(
+  admin: SupabaseClient,
+  userId: string,
+  proposalId: string
+): Promise<boolean> {
+  const { data } = await admin
+    .from("proposals")
+    .update({ status: "pending", decided_at: null, result: null })
+    .eq("id", proposalId)
+    .eq("user_id", userId)
+    .eq("status", "approved")
+    .select("id")
+    .maybeSingle();
+  return !!data;
+}
+
+/** Put the item's title/type/tags/due/entities back exactly as they were. */
+export async function undoRetitle(
+  admin: SupabaseClient,
+  userId: string,
+  proposalId: string,
+  itemId: string,
+  deps: ApplyDeps = {}
+): Promise<ApplyResult> {
+  const detail = await loadApplyAudit(admin, userId, proposalId, "retitle_applied");
+  const before = detail?.before as RetitleBefore | undefined;
+  if (!before) {
+    // No recorded before-state means we cannot honestly claim to reverse it.
+    return { ok: false, message: "Can't undo — no recorded before-state" };
+  }
+
+  const item = await loadItem(admin, userId, itemId);
+  if (!item) return { ok: false, message: "Can't undo — the item is gone" };
+
+  const { error } = await admin
+    .from("items")
+    .update({
+      title: before.title,
+      type: before.type,
+      tags: before.tags ?? [],
+      due_at: before.due_at ?? null,
+      entities: before.entities ?? [],
+    })
+    .eq("id", itemId)
+    .eq("user_id", userId);
+  if (error) return { ok: false, message: `Could not undo: ${error.message}` };
+
+  // The title is part of the embedding basis, so the vector has to go back too.
+  await reembed(admin, userId, itemId, before.title ?? "", item.body ?? "", deps);
+  await reprojectItemToVault(admin, itemId);
+  if (!(await markPendingAgain(admin, userId, proposalId))) {
+    return { ok: false, message: "Item restored, but the proposal was already re-decided" };
+  }
+
+  await logAudit(admin, {
+    user_id: userId,
+    item_id: itemId,
+    action: "retitle_undone",
+    actor: "user",
+    detail: { proposal_id: proposalId, restored: before },
+  });
+  return { ok: true, message: "Undone" };
+}
+
+/**
+ * Reverse a split: delete the parts it created and un-supersede the original.
+ *
+ * Deleting is correct here rather than reckless — those rows were created by
+ * the very action being undone, seconds earlier, and leaving them would double
+ * the memory. The original was only ever archived + superseded, never
+ * destroyed, so it comes back intact.
+ */
+export async function undoSplit(
+  admin: SupabaseClient,
+  userId: string,
+  proposalId: string,
+  itemId: string
+): Promise<ApplyResult> {
+  const detail = await loadApplyAudit(admin, userId, proposalId, "split_applied");
+  const before = detail?.before as { status?: string; title?: string | null } | undefined;
+  const parts = Array.isArray(detail?.parts) ? (detail!.parts as string[]) : [];
+  if (!before) return { ok: false, message: "Can't undo — no recorded before-state" };
+
+  // Refuse rather than half-undo if the owner has since edited a part: silently
+  // deleting work they did after the split would be far worse than no undo.
+  if (parts.length) {
+    const { data: partRows } = await admin
+      .from("items")
+      .select("id,vault_path,updated_at,created_at")
+      .eq("user_id", userId)
+      .in("id", parts);
+    const edited = (partRows ?? []).filter(
+      (r) => new Date(r.updated_at as string).getTime() - new Date(r.created_at as string).getTime() > 5000
+    );
+    if (edited.length) {
+      return { ok: false, message: "Can't undo — one of the parts has been edited since" };
+    }
+    for (const r of partRows ?? []) {
+      if (r.vault_path) {
+        try {
+          await deleteVaultNote(r.vault_path as string);
+        } catch {
+          // vault cleanup is best-effort; the DB is the source of truth
+        }
+      }
+    }
+    await admin.from("items").delete().eq("user_id", userId).in("id", parts);
+  }
+
+  const { error } = await admin
+    .from("items")
+    .update({ status: before.status ?? "open", valid_to: null, superseded_by: null })
+    .eq("id", itemId)
+    .eq("user_id", userId);
+  if (error) return { ok: false, message: `Could not restore the original: ${error.message}` };
+
+  await reprojectItemToVault(admin, itemId);
+  if (!(await markPendingAgain(admin, userId, proposalId))) {
+    return { ok: false, message: "Original restored, but the proposal was already re-decided" };
+  }
+
+  await logAudit(admin, {
+    user_id: userId,
+    item_id: itemId,
+    action: "split_undone",
+    actor: "user",
+    detail: { proposal_id: proposalId, removed_parts: parts },
+  });
+  return { ok: true, message: `Undone — ${parts.length} part(s) removed` };
+}
+
 export async function rejectProposalById(
   admin: SupabaseClient,
   userId: string,

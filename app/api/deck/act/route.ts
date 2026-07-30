@@ -4,7 +4,7 @@ import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { isOwner } from "@/lib/owner";
 import { logAudit } from "@/lib/audit";
-import { applyProposal, rejectProposalById } from "@/lib/proposals";
+import { applyProposal, rejectProposalById, undoRetitle, undoSplit } from "@/lib/proposals";
 import { reprojectItemToVault } from "@/lib/vault-sync";
 
 export const runtime = "nodejs";
@@ -234,28 +234,28 @@ async function importAction(admin: SupabaseClient, userId: string, proposalId: s
       return NextResponse.json({ ok: true, message: "Undone" });
     }
     if (d.kind === "import_approve") {
-      // Best-effort: flips the proposal back to pending. Any side-effect the
-      // shared applyProposal already performed (a ClickUp task today; a
-      // retitle/split item write once W2's apply logic lands) is NOT
-      // automatically reverted — see the integration note in the deck's
-      // final report. Safe today because retitle/split apply is a no-op.
-      const { data } = await admin
-        .from("proposals")
-        .update({ status: "pending", decided_at: null, result: null })
-        .eq("id", proposalId)
-        .eq("user_id", userId)
-        .eq("status", "approved")
-        .select("id")
-        .maybeSingle();
-      if (!data) return NextResponse.json({ ok: false, message: "Can't undo — no longer approved" }, { status: 409 });
+      // v4.0.1 item 3 — a REAL reversal, not just a proposal-status flip.
+      // The old behaviour said "Undone" while leaving the retitle/split item
+      // write in place, which is worse than offering no undo at all. Both
+      // apply paths record a complete before-state in the audit trail; these
+      // read it back and restore it (and only then re-open the proposal).
+      const itemId = proposal.source_item_id;
+      if (!itemId) {
+        return NextResponse.json({ ok: false, message: "Can't undo — no source item" }, { status: 409 });
+      }
+      const result =
+        proposal.kind === "split"
+          ? await undoSplit(admin, userId, proposalId, itemId)
+          : await undoRetitle(admin, userId, proposalId, itemId);
+      if (!result.ok) return NextResponse.json({ ok: false, message: result.message }, { status: 409 });
       await logAudit(admin, {
         user_id: userId,
-        item_id: proposal.source_item_id,
+        item_id: itemId,
         action: "deck_approve_undo",
         actor: "user",
-        detail: { proposal_id: proposalId, note: "proposal state reverted; any applied item/external write is not" },
+        detail: { proposal_id: proposalId, kind: proposal.kind },
       });
-      return NextResponse.json({ ok: true, message: "Undone" });
+      return NextResponse.json({ ok: true, message: result.message });
     }
     return NextResponse.json({ ok: false, message: "Undo descriptor doesn't match this mode" }, { status: 400 });
   }

@@ -11,6 +11,7 @@ import { reprojectItemToVault } from "@/lib/vault-sync";
 import { applyProposal, rejectProposalById } from "@/lib/proposals";
 import { logAudit } from "@/lib/audit";
 import { reportSourceStatus } from "@/lib/source-status";
+import { JUNK_ARCHIVE_SCORE } from "@/lib/title-standard.mjs";
 import { logLlmUsage } from "@/lib/usage";
 import { sendMessage, answerCallbackQuery, editMessageText } from "@/lib/telegram";
 import {
@@ -66,6 +67,9 @@ const HELP = [
 // Text that suggests the owner is asking about timezone but the intent model
 // didn't recognize a /tz-shaped command (e.g. "what timezone are you using").
 const TIMEZONE_HINT_RE = /\btime\s?zone\b/i;
+
+// The "would be junk" bar (8/10). Junk is surfaced, never auto-archived.
+const JUNK_FLAG_SCORE = JUNK_ARCHIVE_SCORE;
 
 export async function POST(req: Request) {
   // 1. Verify Telegram's secret token.
@@ -445,8 +449,17 @@ async function captureAndSummarize(
     outcome.created
       .map((c) => {
         const due = c.due_at ? ` (due ${c.due_at.slice(0, 10)})` : "";
-        const rev = c.needs_review ? " · needs review" : "";
-        return `🧠 Saved ${c.item.type}: ${c.item.title}${due}${rev}`;
+        // v4.0.1 item 5 — name the junk verdict instead of a bare "Saved".
+        // Junk is never auto-archived any more (owner directive), so nothing is
+        // hidden; but a capture the pass scored as junk will show up in the
+        // evening deck wearing a badge, and finding that out then is a small
+        // unpleasant surprise. Saying it here costs one clause.
+        const junk =
+          typeof c.junk_score === "number" && c.junk_score >= JUNK_FLAG_SCORE
+            ? " · flagged as likely junk — kept, review it in tonight's deck"
+            : "";
+        const rev = c.needs_review && !junk ? " · needs review" : "";
+        return `🧠 Saved ${c.item.type}: ${c.item.title}${due}${junk}${rev}`;
       })
       .join("\n") || "🧠 Saved.";
   return { outcome, summary };

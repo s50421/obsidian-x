@@ -55,6 +55,10 @@ export type CreatedItem = {
   due_at: string | null;
   needs_review: boolean;
   review_reason: string | null;
+  /** 0..10 junk pass. Surfaced, never acted on — the caller decides whether to
+   *  mention it (the Telegram bot names it so a flagged capture isn't a
+   *  surprise in the evening deck). */
+  junk_score: number | null;
   entities: { name: string; kind: string }[];
   links: { id: string; title: string }[];
   vault_path: string | null;
@@ -215,6 +219,7 @@ export async function storeEnrichedItem(
     due_at: item.due_at,
     needs_review: item.needs_review,
     review_reason: item.review_reason,
+    junk_score: it.junk_score ?? null,
     entities: it.entities,
     links: links.map((l) => ({ id: l.id, title: l.title })),
     vault_path,

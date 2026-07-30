@@ -70,6 +70,39 @@ function fmtDate(iso: string): string {
   }
 }
 
+// Audit slugs are machine-shaped (review_merge, clickup_task_created). The
+// inspector is a reading surface, so render them as prose. Anything unmapped
+// still shows — de-slugged rather than hidden, since an unknown action is
+// still part of the item's history.
+const AUDIT_LABEL: Record<string, string> = {
+  capture: "Captured",
+  email_capture: "Captured from email",
+  document_upload: "Uploaded as a document",
+  screenshot_upload: "Uploaded as a screenshot",
+  gmail_auto_created: "Created from an email",
+  granola_ingested: "Ingested from Granola",
+  review_approve: "Kept in review",
+  review_merge: "Merged with a duplicate",
+  review_delete: "Deleted in review",
+  retitle_applied: "Re-titled",
+  split_applied: "Split into parts",
+  deck_keep: "Kept in the deck",
+  deck_archive: "Archived from the deck",
+  clickup_task_created: "ClickUp task created",
+  clickup_status_sync: "Status synced from ClickUp",
+  followup_surfaced: "Surfaced as a follow-up",
+  resurfaced: "Resurfaced",
+  supersede: "Superseded",
+  archive_import: "Archived with the import",
+};
+
+function auditLabel(action: string): string {
+  const known = AUDIT_LABEL[action];
+  if (known) return known;
+  const s = action.replace(/[_.]/g, " ");
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
 const FIELD_INPUT =
   "h-11 w-full rounded-control border border-hairline bg-surface-2 px-3.5 text-[15px] text-ink outline-none transition focus:border-accent focus:shadow-[0_0_0_3px_rgba(80,107,242,0.2)]";
 
@@ -293,15 +326,47 @@ export default function DeckDetail({ card, mode, editing, busy, onClose, onEditS
                 </InspectorSection>
               )}
 
-              {/* 5 · provenance */}
+              {/* 5 · provenance — where it came from, where it went, and
+                  everything that has happened to it since (v4.0.1 item 4). */}
               <InspectorSection label="Provenance">
                 <div className={`${CARD_INSET} px-3.5 py-2`}>
                   <MetaRow label="Source">{card.source}</MetaRow>
                   <MetaRow label="Captured">{fmtDate(card.createdAt)}</MetaRow>
+                  {card.external?.clickup?.url && (
+                    <MetaRow label="ClickUp">
+                      <a
+                        href={card.external.clickup.url}
+                        target="_blank"
+                        rel="noreferrer noopener"
+                        className="break-all text-accent-text underline underline-offset-2"
+                      >
+                        {card.external.clickup.id
+                          ? `Task ${card.external.clickup.id}`
+                          : card.external.clickup.url}
+                      </a>
+                    </MetaRow>
+                  )}
                   <MetaRow label="Item ID">
                     <span className="break-all font-mono text-[11px] text-ink-3">{card.itemId}</span>
                   </MetaRow>
                 </div>
+
+                {card.audit.length > 0 && (
+                  <div className={`mt-2 ${CARD_INSET} px-3.5 py-2`}>
+                    {card.audit.map((a, i) => (
+                      <div
+                        key={`${a.at}-${i}`}
+                        className={`flex items-baseline gap-3 py-1.5 text-[13px] ${
+                          i > 0 ? "border-t border-hairline" : ""
+                        }`}
+                      >
+                        <span className="min-w-0 flex-1 truncate text-ink">{auditLabel(a.action)}</span>
+                        <span className="shrink-0 text-xs text-ink-3">{a.actor}</span>
+                        <span className="shrink-0 text-xs tabular-nums text-ink-3">{fmtDate(a.at)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </InspectorSection>
             </>
           )}

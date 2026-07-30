@@ -152,7 +152,10 @@ export default function AppNav({ hideMobileBar = false }: { hideMobileBar?: bool
   return (
     <>
       {/* Desktop — slim translucent top nav */}
-      <header className="sticky top-0 z-40 hidden border-b border-hairline bg-material backdrop-blur-[20px] md:block">
+      {/* Sticks BELOW the safe-area strip, not at viewport 0 — otherwise it
+          slides under the status bar on a notched device in standalone.
+          Resolves to top-0 everywhere there's no inset. */}
+      <header className="sticky top-[env(safe-area-inset-top)] z-40 hidden border-b border-hairline bg-material backdrop-blur-[20px] md:block">
         <div className="mx-auto flex max-w-5xl items-center justify-between px-8 py-3">
           <div className="flex items-center gap-7">
             <Link href="/" className="text-[17px] font-bold tracking-tight text-ink">

@@ -56,7 +56,9 @@ export default function InterviewPage() {
     <>
       <AppNav hideMobileBar />
       <main className="obx-safe-x mx-auto flex w-full max-w-3xl flex-1 flex-col px-4 md:px-8">
-        <div className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-hairline bg-base pb-3 pt-[calc(12px+env(safe-area-inset-top))] md:pt-3">
+        {/* The inset is now handled once on <body>, so this only needs its own
+            padding — and it sticks below the safe-area strip rather than at 0. */}
+        <div className="sticky top-[env(safe-area-inset-top)] z-10 flex items-center justify-between gap-3 border-b border-hairline bg-base pb-3 pt-3">
           <div className="min-w-0">
             <h1 className="text-[20px] font-bold tracking-[-0.015em]">Interview</h1>
             <p className="mt-0.5 text-[13px] text-ink-2">

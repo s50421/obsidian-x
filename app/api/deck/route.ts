@@ -23,6 +23,11 @@ const DEFAULT_LIMIT = 20;
 
 type LinkPreview = { id: string; title: string; type: string };
 
+/** v4.0.1 item 4 — the inspector's Provenance section shows where an item came
+ *  from AND everything that has happened to it since. */
+export type AuditEntryPreview = { action: string; actor: string; at: string };
+export type ExternalRef = { clickup?: { id?: string; url?: string } } | null;
+
 export type DeckCard = {
   mode: "daily" | "import";
   id: string; // item id (daily) or proposal id (import)
@@ -43,6 +48,10 @@ export type DeckCard = {
   // junk pass (v4.0.1) — surfaced, never auto-archived. 0..10, or null. The
   // client badges >= 8 as "would be junk", 5-7 as "possible junk".
   junkScore: number | null;
+  /** items.external — currently the ClickUp task ref, when one was created. */
+  external: ExternalRef;
+  /** Most recent audit rows for this item, newest first. */
+  audit: AuditEntryPreview[];
   // import-only
   proposalKind: "retitle" | "split" | null;
   reason: string | null;
@@ -77,6 +86,39 @@ async function resolveLinkPreviews(
   return map;
 }
 
+/**
+ * The last few audit rows per item, newest first. One query for the whole page
+ * rather than N — the deck is opened casually and must stay fast.
+ */
+const AUDIT_PER_ITEM = 5;
+
+async function resolveAuditTrails(
+  admin: SupabaseClient,
+  userId: string,
+  itemIds: string[]
+): Promise<Map<string, AuditEntryPreview[]>> {
+  const out = new Map<string, AuditEntryPreview[]>();
+  const unique = [...new Set(itemIds)].filter(Boolean);
+  if (unique.length === 0) return out;
+  const { data } = await admin
+    .from("audit")
+    .select("item_id,action,actor,created_at")
+    .eq("user_id", userId)
+    .in("item_id", unique)
+    .order("created_at", { ascending: false })
+    // Enough rows that every item on the page can reach its cap, without
+    // pulling an unbounded history for a heavily-edited item.
+    .limit(unique.length * AUDIT_PER_ITEM * 2);
+  for (const r of data ?? []) {
+    const id = r.item_id as string;
+    const list = out.get(id) ?? [];
+    if (list.length >= AUDIT_PER_ITEM) continue;
+    list.push({ action: r.action as string, actor: r.actor as string, at: r.created_at as string });
+    out.set(id, list);
+  }
+  return out;
+}
+
 // ---- daily mode ----------------------------------------------------------------
 
 type ItemRow = {
@@ -93,6 +135,7 @@ type ItemRow = {
   due_at: string | null;
   entities: { name: string; kind: string }[] | null;
   junk_score: number | null;
+  external: ExternalRef;
   created_at: string;
 };
 
@@ -109,7 +152,7 @@ async function fetchTodayCandidates(
   const { start, end } = localDayBoundsUtc(tz, todayStr);
   const { data } = await admin
     .from("items")
-    .select("id,type,title,body,raw,status,priority,tags,source,links,due_at,entities,junk_score,created_at")
+    .select("id,type,title,body,raw,status,priority,tags,source,links,due_at,entities,junk_score,external,created_at")
     .eq("user_id", userId)
     .neq("source", "system")
     .gte("created_at", start)
@@ -184,7 +227,10 @@ async function handleDaily(admin: SupabaseClient, userId: string, cursorRaw: str
   const page = remaining.slice(offset, offset + limit);
   const nextCursor = offset + limit < remaining.length ? String(offset + limit) : null;
 
-  const linkPreviews = await resolveLinkPreviews(admin, userId, page.flatMap((i) => i.links ?? []));
+  const [linkPreviews, auditTrails] = await Promise.all([
+    resolveLinkPreviews(admin, userId, page.flatMap((i) => i.links ?? [])),
+    resolveAuditTrails(admin, userId, page.map((i) => i.id)),
+  ]);
 
   const cards: DeckCard[] = page.map((i) => ({
     mode: "daily",
@@ -204,6 +250,8 @@ async function handleDaily(admin: SupabaseClient, userId: string, cursorRaw: str
     links: (i.links ?? []).map((id) => linkPreviews.get(id)).filter((x): x is LinkPreview => !!x),
     dueAt: i.due_at,
     junkScore: typeof i.junk_score === "number" ? i.junk_score : null,
+    external: i.external ?? null,
+    audit: auditTrails.get(i.id) ?? [],
     proposalKind: null,
     reason: null,
     confidence: null,
@@ -293,16 +341,15 @@ async function handleImport(admin: SupabaseClient, userId: string, cursorRaw: st
   if (itemIds.length) {
     const { data: itemRows } = await admin
       .from("items")
-      .select("id,type,title,body,raw,status,priority,tags,source,links,due_at,entities,junk_score,created_at")
+      .select("id,type,title,body,raw,status,priority,tags,source,links,due_at,entities,junk_score,external,created_at")
       .eq("user_id", userId)
       .in("id", itemIds);
     for (const r of (itemRows ?? []) as ItemRow[]) itemsById.set(r.id, r);
   }
-  const linkPreviews = await resolveLinkPreviews(
-    admin,
-    userId,
-    [...itemsById.values()].flatMap((i) => i.links ?? [])
-  );
+  const [linkPreviews, auditTrails] = await Promise.all([
+    resolveLinkPreviews(admin, userId, [...itemsById.values()].flatMap((i) => i.links ?? [])),
+    resolveAuditTrails(admin, userId, [...itemsById.keys()]),
+  ]);
 
   const cards: DeckCard[] = page
     .map((p): DeckCard | null => {
@@ -336,6 +383,8 @@ async function handleImport(admin: SupabaseClient, userId: string, cursorRaw: st
             : typeof item.junk_score === "number"
               ? item.junk_score
               : null,
+        external: item.external ?? null,
+        audit: auditTrails.get(item.id) ?? [],
         proposalKind: isSplit ? "split" : "retitle",
         reason: payload.reason ?? null,
         confidence: typeof payload.confidence === "number" ? payload.confidence : null,
