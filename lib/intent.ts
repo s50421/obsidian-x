@@ -10,6 +10,10 @@ export type IntentKind =
   | "complete_all"
   | "reopen"
   | "ask"
+  // v4.2 — "put that on my ClickUp board". An EXPLICIT instruction to project
+  // something onto the task board, either a brand-new task or one already in
+  // the brain.
+  | "clickup"
   | "unknown";
 
 export type Intent = {
@@ -27,6 +31,7 @@ const KINDS: IntentKind[] = [
   "complete_all",
   "reopen",
   "ask",
+  "clickup",
   "unknown",
 ];
 
@@ -38,11 +43,12 @@ export async function interpretIntent(text: string, todayISO: string): Promise<I
     `what they want. Today is ${todayISO}.\n` +
     `Return ONLY a JSON object:\n` +
     `{\n` +
-    `  "intent": one of ["save","complete","complete_all","reopen","ask","unknown"],\n` +
+    `  "intent": one of ["save","complete","complete_all","reopen","ask","clickup","unknown"],\n` +
     `  "summary": one short sentence, addressed to the owner, describing what you'll do\n` +
     `             (e.g. "Save a task to pick up milk tomorrow", "Mark your dentist task done",\n` +
-    `              "Reopen your rent task", "Answer what you owe on invoices"),\n` +
-    `  "target": for "complete"/"reopen" ONLY, the item they mean in their own words, else "",\n` +
+    `              "Reopen your rent task", "Answer what you owe on invoices",\n` +
+    `              "Add the roof quote to your ClickUp board"),\n` +
+    `  "target": for "complete"/"reopen"/"clickup", the item they mean in their own words, else "",\n` +
     `  "query": for "ask" ONLY, the question to answer, else "",\n` +
     `  "confidence": number 0..1\n` +
     `}\n` +
@@ -57,6 +63,11 @@ export async function interpretIntent(text: string, todayISO: string): Promise<I
     `("reopen the rent task", "actually I didn't finish the report", "mark the dentist task not done").\n` +
     `- "ask": a genuine question or request to look something up in their notes ` +
     `("what did I say about X", "when's my meeting", "do I owe anything").\n` +
+    `- "clickup": they explicitly want something ON THEIR CLICKUP BOARD / task list ` +
+    `("add this to clickup", "put the roof quote on my board", "make a clickup task to call the bank", ` +
+    `"add to my task list"). The giveaway is naming the board/ClickUp/task-list as the DESTINATION. ` +
+    `Put the task itself in "target" — either the new task's text, or the words identifying an ` +
+    `existing item. A plain to-do with NO destination named is "save", not "clickup".\n` +
     `- "unknown": genuinely unclear.\n` +
     `Rules: when torn between save and ask, prefer "save" (a statement is usually a note). ` +
     `Only pick complete/complete_all when they clearly report something as DONE, not when ` +

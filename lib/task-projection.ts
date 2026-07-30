@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { clickupConfigured } from "@/lib/clickup";
-import { applyProposal, proposeClickUpTaskForItem } from "@/lib/proposals";
+import { applyProposal, notifyClickUpProposal, proposeClickUpTaskForItem } from "@/lib/proposals";
 import { logAudit } from "@/lib/audit";
 import type { ActionItem } from "@/lib/letter";
 
@@ -65,6 +65,47 @@ export async function setProjectionMode(
     mode: mode === "off" ? "ask" : mode,
     enabled: mode !== "off",
   });
+}
+
+/**
+ * Project a freshly-captured task the moment it's created.
+ *
+ * Without this, a task typed at noon sat in the brain until the next morning's
+ * letter — which failed the brief's own exit test ("a task item created via
+ * Telegram at noon -> on the ClickUp board same minute"). Inbound email has
+ * done capture-time projection since v1.5; every other capture surface was
+ * waiting a whole day.
+ *
+ * Respects the same trust dial, so on 'ask' this raises one approval rather
+ * than silently creating tasks. Returns the created/proposed count.
+ */
+export async function projectNewCaptures(
+  admin: SupabaseClient,
+  userId: string,
+  created: { item: { id: string; type: string } }[],
+  source: string
+): Promise<{ proposed: number; created: number }> {
+  const out = { proposed: 0, created: 0 };
+  if (!clickupConfigured()) return out;
+  const tasks = created.filter((c) => c.item.type === "task");
+  if (!tasks.length) return out;
+
+  const mode = await projectionMode(admin, userId);
+  if (mode === "off") return out;
+
+  for (const t of tasks) {
+    const proposal = await proposeClickUpTaskForItem(admin, userId, t.item.id, source);
+    if (!proposal) continue;
+    out.proposed += 1;
+    if (mode === "auto") {
+      const applied = await applyProposal(admin, userId, proposal.id);
+      if (applied.ok) out.created += 1;
+    } else {
+      // 'ask' — surface it where the owner already is, one tap to approve.
+      await notifyClickUpProposal(proposal);
+    }
+  }
+  return out;
 }
 
 /**

@@ -92,3 +92,20 @@ test("every possible tick minute of the day is classified without throwing", () 
   }
   assert.equal(inCount, 286, "06:15..11:00 inclusive");
 });
+
+// ---------------------------------------------------------------------------
+// Timezone inference must not treat a serialisation artifact as a location.
+
+const { isUtcLike } = await import("../lib/tz.ts");
+
+test("UTC-like TZIDs are rejected as home-timezone signals", () => {
+  for (const t of ["UTC", "utc", "Etc/UTC", "GMT", "Etc/GMT", "Z", "Zulu", "Etc/GMT+5", "Etc/GMT-11"]) {
+    assert.equal(isUtcLike(t), true, `${t} must not count as where the owner lives`);
+  }
+});
+
+test("real home timezones are still accepted", () => {
+  for (const t of ["America/Vancouver", "Europe/Berlin", "Asia/Kolkata", "Australia/Sydney", "America/Sao_Paulo"]) {
+    assert.equal(isUtcLike(t), false, `${t} is a real place and must count`);
+  }
+});

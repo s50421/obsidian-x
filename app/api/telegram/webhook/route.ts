@@ -8,7 +8,9 @@ import { interpretIntent } from "@/lib/intent";
 import { embedText } from "@/lib/embed";
 import { deleteVaultNote } from "@/lib/vault";
 import { reprojectItemToVault } from "@/lib/vault-sync";
-import { applyProposal, rejectProposalById } from "@/lib/proposals";
+import { applyProposal, proposeClickUpTaskForItem, rejectProposalById } from "@/lib/proposals";
+import { clickupConfigured } from "@/lib/clickup";
+import { projectNewCaptures } from "@/lib/task-projection";
 import { logAudit } from "@/lib/audit";
 import { reportSourceStatus } from "@/lib/source-status";
 import { JUNK_ARCHIVE_SCORE } from "@/lib/title-standard.mjs";
@@ -62,6 +64,7 @@ const HELP = [
   "• Done — “finished the report”, “dentist is booked”, “all done”",
   "• Reopen — “reopen the rent task”, “I didn't finish X”",
   "• Ask — “what do I owe?”, “when's my meeting?”",
+  "• Board — “add this to clickup”, “put the roof quote on my board”",
   "",
   "One real command: /tz — check or change the timezone your 6:30am letter uses.",
 ].join("\n");
@@ -161,6 +164,9 @@ async function handleMessage(
     case "ask":
       await runAsk(userId, intent.query || text);
       break;
+    case "clickup":
+      await handleClickUp(admin, userId, intent.target || text);
+      break;
     case "unknown":
       // Didn't parse as a clear intent — if it reads like a timezone question,
       // point at /tz instead of quietly filing it away as a note.
@@ -249,6 +255,11 @@ async function handleCallback(
   const [action, id, extra] = (cb.data ?? "").split(":");
 
   // v4.2 — the daily letter's buttons.
+  if (action === "cu" && id) {
+    await answerCallbackQuery(cb.id, "Adding to ClickUp…");
+    await pushItemToClickUp(admin, userId, id);
+    return;
+  }
   if (action === "mdraft" && id) {
     await showMailDraft(admin, userId, id, cb);
     return;
@@ -348,7 +359,7 @@ async function promptSave(
 
   if (error || !p) {
     // Proposal store unavailable — fall back to saving directly.
-    const { summary: s } = await captureAndSummarize(userId, text);
+    const { summary: s } = await captureAndSummarize(admin, userId, text);
     await sendMessage(s, { parse_mode: "plain" });
     return;
   }
@@ -383,7 +394,7 @@ async function approveCaptureProposal(
     return;
   }
   const text = ((p.payload as { text?: string } | null)?.text ?? "").toString();
-  const { outcome, summary } = await captureAndSummarize(userId, text);
+  const { outcome, summary } = await captureAndSummarize(admin, userId, text);
   await admin
     .from("proposals")
     .update({
@@ -457,10 +468,14 @@ async function rejectProposal(
 
 // Run the capture pipeline and format a clean confirmation line per created item.
 async function captureAndSummarize(
+  admin: SupabaseClient,
   userId: string,
   text: string
 ): Promise<{ outcome: Awaited<ReturnType<typeof captureText>>; summary: string }> {
   const outcome = await captureText(userId, text, "telegram");
+  // v4.2 — a task captured at noon reaches the board at noon, not tomorrow
+  // morning. Fire-and-forget so ClickUp latency never delays the save reply.
+  void projectNewCaptures(admin, userId, outcome.created, "telegram");
   const summary =
     outcome.created
       .map((c) => {
@@ -479,6 +494,102 @@ async function captureAndSummarize(
       })
       .join("\n") || "🧠 Saved.";
   return { outcome, summary };
+}
+
+
+// ---- v4.2: "put that on my ClickUp board" -------------------------------------
+
+// An EXPLICIT instruction to project something onto the task board.
+//
+// This creates the ClickUp task immediately rather than asking for approval,
+// and that is deliberate: propose-approve exists to gate what the system
+// INFERRED, not what the owner just directly told it to do. Making someone
+// confirm the thing they asked for one second ago is friction pretending to be
+// safety. Every other ClickUp path (the morning projection, inbound email)
+// still proposes, because those are the system's judgement, not the owner's.
+//
+// Two shapes: naming an item already in the brain projects that one; anything
+// else is captured as a new task first, so the board and the brain never
+// disagree about what exists.
+async function handleClickUp(
+  admin: SupabaseClient,
+  userId: string,
+  target: string
+): Promise<void> {
+  if (!clickupConfigured()) {
+    await sendMessage("ClickUp isn't configured — no API token set.", { parse_mode: "plain" });
+    return;
+  }
+
+  // Does this refer to something already captured?
+  const matches = await resolveMatches(admin, userId, target, "open");
+  const top = matches[0]?.similarity ?? 0;
+  const cluster = matches.filter((m) => m.similarity >= top - COMPLETE_MARGIN);
+
+  if (matches.length && top >= COMPLETE_STRONG && cluster.length === 1) {
+    await pushItemToClickUp(admin, userId, cluster[0].id);
+    return;
+  }
+
+  if (matches.length && top >= COMPLETE_STRONG && cluster.length > 1) {
+    await sendMessage("Which one should go on the board?", {
+      parse_mode: "plain",
+      reply_markup: {
+        inline_keyboard: cluster.slice(0, 5).map((m) => [
+          { text: `📋 ${m.title.slice(0, 40)}`, callback_data: `cu:${m.id}` },
+        ]),
+      },
+    });
+    return;
+  }
+
+  // Nothing matched — treat it as a new task. Captured first so the brain
+  // stays the source of truth and the board stays a projection of it.
+  const outcome = await captureText(userId, target, "telegram");
+  const created = outcome.created[0];
+  if (!created) {
+    await sendMessage("Couldn't work out what to add — try naming the task.", { parse_mode: "plain" });
+    return;
+  }
+  await pushItemToClickUp(admin, userId, created.item.id);
+}
+
+// Create the ClickUp task for one item and report back with its link.
+async function pushItemToClickUp(
+  admin: SupabaseClient,
+  userId: string,
+  itemId: string
+): Promise<void> {
+  const { data: item } = await admin
+    .from("items")
+    .select("id,title,external")
+    .eq("id", itemId)
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (!item) {
+    await sendMessage("That item is gone.", { parse_mode: "plain" });
+    return;
+  }
+
+  const existing = (item.external as { clickup?: { url?: string } } | null)?.clickup?.url;
+  if (existing) {
+    await sendMessage(`Already on the board: ${item.title}\n${existing}`, { parse_mode: "plain" });
+    return;
+  }
+
+  const proposal = await proposeClickUpTaskForItem(admin, userId, itemId, "telegram");
+  if (!proposal) {
+    await sendMessage("Couldn't prepare that task.", { parse_mode: "plain" });
+    return;
+  }
+  const result = await applyProposal(admin, userId, proposal.id);
+  if (!result.ok) {
+    await sendMessage(`ClickUp failed: ${result.message}`, { parse_mode: "plain" });
+    return;
+  }
+  await sendMessage(`📋 On your ClickUp board: ${item.title}${result.url ? `\n${result.url}` : ""}`, {
+    parse_mode: "plain",
+  });
 }
 
 // ---- v4.2 letter buttons ------------------------------------------------------

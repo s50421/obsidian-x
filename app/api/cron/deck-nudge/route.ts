@@ -59,7 +59,13 @@ export async function GET(req: Request) {
   if (!isCronAuthorized(req)) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
-  const dry = new URL(req.url).searchParams.get("dry") === "1";
+  const params = new URL(req.url).searchParams;
+  const dry = params.get("dry") === "1";
+  // Owner-triggered TEST fire: bypass the window, the nothing-to-review gate
+  // and the once-a-day marker, and deliberately do NOT record the marker — so
+  // the real evening nudge still goes out on schedule. Same contract as the
+  // brief's ?force=1.
+  const force = params.get("force") === "1";
 
   const admin = createAdminClient();
   const { data: list, error: le } = await admin.auth.admin.listUsers();
@@ -88,29 +94,53 @@ export async function GET(req: Request) {
     return NextResponse.json({ dry: true, wouldSend, tz, localTime, dailyRemaining, importPending, total });
   }
 
-  if (!withinEveningWindow) {
-    return NextResponse.json({ skipped: true, reason: "outside-window", tz, localTime, total });
-  }
-  if (total === 0) {
-    return NextResponse.json({ skipped: true, reason: "nothing-to-review", tz, localTime, total });
-  }
-  if (await alreadySentToday(admin, owner.id, localDate)) {
-    return NextResponse.json({ skipped: true, reason: "already-sent", tz, localTime, total });
+  if (!force) {
+    if (!withinEveningWindow) {
+      return NextResponse.json({ skipped: true, reason: "outside-window", tz, localTime, total });
+    }
+    if (total === 0) {
+      return NextResponse.json({ skipped: true, reason: "nothing-to-review", tz, localTime, total });
+    }
+    if (await alreadySentToday(admin, owner.id, localDate)) {
+      return NextResponse.json({ skipped: true, reason: "already-sent", tz, localTime, total });
+    }
   }
 
   const parts: string[] = [];
   if (dailyRemaining > 0) parts.push(`${dailyRemaining} new ${dailyRemaining === 1 ? "memory" : "memories"} today`);
   if (importPending > 0) parts.push(`${importPending} import${importPending === 1 ? "" : "s"} to review`);
-  const text = `🃏 ${parts.join(" · ")} — review your deck`;
+  const text = parts.length
+    ? `🃏 ${parts.join(" · ")} — review your deck`
+    : "🃏 Nothing to review tonight — your deck is clear.";
 
   const reply_markup: InlineKeyboard = { inline_keyboard: [[{ text: "Open the deck →", url: DECK_URL }]] };
-  await sendMessage(text, { parse_mode: "plain", reply_markup });
-  await logAudit(admin, {
-    user_id: owner.id,
-    action: NUDGE_SENT_ACTION,
-    actor: "system",
-    detail: { dailyRemaining, importPending, total, tz, localDate },
-  });
+  const delivery = await sendMessage(text, { parse_mode: "plain", reply_markup });
+  if (!delivery) {
+    return NextResponse.json(
+      { ok: false, sent: false, error: "telegram rejected the message", tz, localTime },
+      { status: 502 }
+    );
+  }
+  // A forced test fire is not the daily nudge: no marker, so the real one still
+  // goes out this evening.
+  if (!force) {
+    await logAudit(admin, {
+      user_id: owner.id,
+      action: NUDGE_SENT_ACTION,
+      actor: "system",
+      detail: { dailyRemaining, importPending, total, tz, localDate },
+    });
+  }
 
-  return NextResponse.json({ ok: true, tz, localTime, dailyRemaining, importPending, total });
+  return NextResponse.json({
+    ok: true,
+    sent: true,
+    messageId: delivery.message_id,
+    forced: force,
+    tz,
+    localTime,
+    dailyRemaining,
+    importPending,
+    total,
+  });
 }

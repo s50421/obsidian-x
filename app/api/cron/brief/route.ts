@@ -236,7 +236,27 @@ export async function GET(req: Request) {
   // Plain text on purpose: the letter carries subjects and sender names the
   // owner never wrote, and one stray asterisk would break Markdown parsing for
   // the whole message.
-  await sendMessage(letter.text, { parse_mode: "plain", reply_markup: letter.keyboard });
+  // sendMessage is best-effort by design (a Telegram hiccup must never throw
+  // into a cron), but discarding its result meant this route reported ok:true
+  // for a letter that was never delivered — the same class of invisible failure
+  // as the missed window. A send that didn't land is now an error, and the
+  // once-a-day marker is NOT written, so the next tick retries.
+  const delivery = await sendMessage(letter.text, {
+    parse_mode: "plain",
+    reply_markup: letter.keyboard,
+  });
+  if (!delivery) {
+    await logAudit(admin, {
+      user_id: owner.id,
+      action: "brief_send_failed",
+      actor: "system",
+      detail: { tz, localDate, localTime },
+    });
+    return NextResponse.json(
+      { ok: false, sent: false, error: "telegram rejected the message", tz, localTime },
+      { status: 502 }
+    );
+  }
 
   if (!force) {
     await logAudit(admin, {
@@ -262,6 +282,8 @@ export async function GET(req: Request) {
 
   return NextResponse.json({
     ok: true,
+    sent: true,
+    messageId: delivery.message_id,
     forced: force,
     tz,
     localTime,

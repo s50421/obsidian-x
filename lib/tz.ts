@@ -95,6 +95,19 @@ function toHttps(u: string): string {
   return u.replace(/^webcal:\/\//i, "https://");
 }
 
+// Zones that mean "normalised", not "where the owner is". A calendar feed that
+// emits TZID=Etc/UTC is telling us about its own serialisation, not about a
+// human being in Greenwich — treating it as a location signal makes the
+// inferred timezone flip as events roll in and out of the lookahead window.
+const UTC_LIKE = new Set(["utc", "gmt", "z", "etc/utc", "etc/gmt", "etc/greenwich", "etc/zulu", "universal", "zulu"]);
+
+export function isUtcLike(tzid: string): boolean {
+  const t = tzid.trim().toLowerCase();
+  // Etc/GMT+5 and friends are fixed offsets — equally useless as a home-zone
+  // signal, and equally a serialisation artifact.
+  return UTC_LIKE.has(t) || /^etc\/gmt[+-]\d+$/.test(t);
+}
+
 // Look at the owner's configured calendars and find the dominant TZID among
 // events in the next `windowHours` (default 48h, per the brief's 24-48h ask).
 // Returns null if nothing usable is found (no calendars, fetch failures, no
@@ -144,6 +157,15 @@ async function inferTzFromCalendar(windowHours = 48): Promise<string | null> {
         // they don't tell us anything about the owner's local zone, so skip.
         const tzid = (ev.start as unknown as { tz?: string }).tz;
         if (!tzid || !isValidIanaTimeZone(tzid)) continue;
+        // …and some feeds DO carry an explicit `TZID=Etc/UTC` (or UTC/GMT/Z),
+        // which passes the IANA check and would otherwise be counted as if the
+        // owner lived there. Nobody's home timezone is Etc/UTC — it's an
+        // artifact of calendar normalisation. Observed live on 2026-07-30: the
+        // deck nudge resolved Etc/UTC while the letter, minutes earlier,
+        // resolved America/Vancouver, purely because the rolling 48h window had
+        // moved past the zoned events. Left in, that drifts the delivery time
+        // of both by whole hours depending on what's in the diary.
+        if (isUtcLike(tzid)) continue;
 
         const startMs = new Date(ev.start).getTime();
         const durMs = ev.end ? new Date(ev.end).getTime() - startMs : 0;
