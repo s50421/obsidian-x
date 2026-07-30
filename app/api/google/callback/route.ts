@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import { cookies } from "next/headers";
+import { appFromState, statesMatch } from "@/lib/oauth-state";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { isOwner } from "@/lib/owner";
@@ -40,20 +42,21 @@ export async function GET(req: Request) {
 
   const code = url.searchParams.get("code");
   const state = url.searchParams.get("state");
-  const cookieState = req.headers
-    .get("cookie")
-    ?.split(/;\s*/)
-    .find((c) => c.startsWith("obx_google_state="))
-    ?.slice("obx_google_state=".length);
+
+  // Read through Next's cookie jar rather than parsing the header by hand.
+  // Cookie VALUES are percent-encoded on write (`cookie.serialize` defaults to
+  // encodeURIComponent), so the "workspace:<uuid>" state is stored as
+  // "workspace%3A<uuid>" — comparing that raw against Google's already-decoded
+  // `state` param can never match. The jar decodes for us.
+  const cookieState = (await cookies()).get("obx_google_state")?.value;
 
   if (!code) return done({ google: "error", detail: "no code" });
-  if (!state || !cookieState || state !== cookieState) {
+  if (!statesMatch(state, cookieState)) {
     return done({ google: "error", detail: "state mismatch" });
   }
 
-  // The connect leg encoded which OAuth client it used as "<app>:<nonce>".
-  const appPrefix = state.split(":")[0];
-  const app: GoogleApp = isGoogleApp(appPrefix) ? appPrefix : "workspace";
+  // The connect leg encoded which OAuth client it used into the state.
+  const app: GoogleApp = appFromState(state);
 
   try {
     const tok = await exchangeCode(code, app);

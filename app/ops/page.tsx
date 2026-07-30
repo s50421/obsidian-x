@@ -98,7 +98,21 @@ function actionLabel(a: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-export default async function OpsPage() {
+export default async function OpsPage({
+  searchParams,
+}: {
+  // Next 16: searchParams is a Promise.
+  searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
+}) {
+  // The Google OAuth callback redirects back here with its outcome. Rendering
+  // it matters: a failure that only lives in the query string reads to the
+  // owner as "the button did nothing".
+  const sp = await searchParams;
+  const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v);
+  const googleResult = one(sp.google) ?? null;
+  const googleDetail = one(sp.detail) ?? null;
+  const googleMailbox = one(sp.mailbox) ?? null;
+
   const supabase = await createClient();
   const {
     data: { user },
@@ -208,6 +222,29 @@ export default async function OpsPage() {
           <Stat value={recent24h.toLocaleString()} label="new · last 24h" />
           <Stat value={money(sum(usage, cost))} label="LLM spend · all-time" />
         </div>
+
+        {googleResult && (
+          <div
+            className={`mb-4 rounded-card border px-4 py-3 text-[13px] leading-relaxed ${
+              googleResult === "connected"
+                ? "border-hairline bg-white/[0.04] text-ink"
+                : "border-danger/30 bg-danger/10 text-danger"
+            }`}
+            role="status"
+          >
+            {googleResult === "connected" ? (
+              <>
+                <span className="font-semibold">Gmail connected</span>
+                {googleMailbox && <> — {googleMailbox}</>}. The first sync runs on the next cron tick.
+              </>
+            ) : (
+              <>
+                <span className="font-semibold">Gmail connection failed</span>
+                {googleDetail && <> — {googleDetail}</>}. Nothing was saved; you can safely retry.
+              </>
+            )}
+          </div>
+        )}
 
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           {/* v4.1 — the inflow monitor: what this thing can actually see. */}

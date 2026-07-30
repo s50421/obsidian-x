@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
 import { createClient } from "@/lib/supabase/server";
 import { appConfigured, authUrl, isGoogleApp, type GoogleApp } from "@/lib/google-auth";
+import { makeState } from "@/lib/oauth-state";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -31,7 +32,7 @@ export async function GET(req: Request) {
   const hint = params.get("email") ?? undefined;
   // The callback has to exchange the code against the SAME client, so the
   // choice rides along in the (httpOnly, CSRF-checked) state cookie.
-  const state = `${app}:${randomUUID()}`;
+  const state = makeState(app, randomUUID());
   const res = NextResponse.redirect(authUrl(state, hint, app));
   res.cookies.set("obx_google_state", state, {
     httpOnly: true,
