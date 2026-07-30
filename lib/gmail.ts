@@ -43,6 +43,11 @@ const META_HEADERS = [
   "Cc",
   "Subject",
   "Date",
+  // Forwarded mail (personal Gmail → the Workspace mailbox) keeps the ORIGINAL
+  // To:, so a naive "is my address in To:?" check reads every forwarded message
+  // as not-direct. These headers carry the real delivery target.
+  "Delivered-To",
+  "X-Forwarded-To",
   "List-Unsubscribe",
   "List-Id",
   "Precedence",

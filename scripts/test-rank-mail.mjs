@@ -233,3 +233,96 @@ test("othersSpokeLast only fires when I am actually in the conversation", () => 
   assert.equal(othersSpokeLast([them, them], ME), false, "I never spoke → not my thread yet");
   assert.equal(othersSpokeLast([], ME), false);
 });
+
+// --- multi-identity: the personal Gmail forwards into the Workspace mailbox ---
+// A Workspace "Internal" OAuth app can't be granted to a consumer account, so
+// davi.manhart@gmail.com forwards into david@manhartgroup.com and we
+// authenticate only the latter. Forwarded mail keeps its ORIGINAL To:, so
+// identity has to be a SET or the whole forwarded stream reads as not-direct.
+
+const WORK = "david@manhartgroup.com";
+const BOTH = [WORK, ME];
+
+test("forwarded mail addressed to my other address still counts as direct", () => {
+  const fwd = msg({
+    From: "Bob <bob@other.com>",
+    To: ME, // original recipient — the personal account
+    "Delivered-To": WORK, // where it actually landed
+    Subject: "Can you confirm Friday?",
+  });
+
+  const single = deterministicSignals(fwd, WORK, VIP, DEMOTE);
+  assert.equal(single.direct, true, "Delivered-To alone should rescue it");
+
+  const multi = deterministicSignals(fwd, BOTH, VIP, DEMOTE);
+  assert.equal(multi.direct, true, "and the identity set must agree");
+
+  // The regression this guards: matching only the authenticated mailbox.
+  const wrong = deterministicSignals(
+    msg({ From: "Bob <bob@other.com>", To: ME, Subject: "Can you confirm Friday?" }),
+    WORK,
+    VIP,
+    DEMOTE
+  );
+  assert.equal(wrong.direct, false, "without any identity match it is correctly not-direct");
+});
+
+test("X-Forwarded-To is honoured as well as Delivered-To", () => {
+  const s = deterministicSignals(
+    msg({ From: "Bob <bob@other.com>", To: ME, "X-Forwarded-To": WORK, Subject: "Hi" }),
+    WORK,
+    VIP,
+    DEMOTE
+  );
+  assert.equal(s.direct, true);
+});
+
+test("being forwarded does NOT upgrade a cc into a direct message", () => {
+  const s = deterministicSignals(
+    msg({
+      From: "Bob <bob@other.com>",
+      To: "someone@else.com",
+      Cc: ME,
+      "Delivered-To": WORK,
+      Subject: "FYI",
+    }),
+    BOTH,
+    VIP,
+    DEMOTE
+  );
+  assert.equal(s.ccOnly, true, "still cc-only");
+  assert.equal(s.direct, false, "delivery is not the same as being addressed");
+});
+
+test("a forwarded newsletter is still bulk", () => {
+  const s = deterministicSignals(
+    msg({
+      From: "news@shop.example",
+      To: ME,
+      "Delivered-To": WORK,
+      Subject: "Sale!",
+      "List-Unsubscribe": "<https://shop.example/u>",
+    }),
+    BOTH,
+    VIP,
+    DEMOTE
+  );
+  assert.equal(s.bulk, true);
+  const r = scoreMail(s, read({ importance: 1, deadline: true, confidence: 1 }));
+  assert.ok(r.score < SURFACE_THRESHOLD, `forwarding must not launder bulk (got ${r.score})`);
+});
+
+test("othersSpokeLast recognises every one of my addresses as me", () => {
+  const them = { headers: { from: "Bob <bob@other.com>" } };
+  const mePersonal = { headers: { from: `Me <${ME}>` } };
+  assert.equal(
+    othersSpokeLast([them, mePersonal, them], BOTH),
+    true,
+    "I replied from the personal address; they came back → I owe one"
+  );
+  assert.equal(
+    othersSpokeLast([them, mePersonal, them], WORK),
+    false,
+    "with only the work address known, my own reply is invisible"
+  );
+});

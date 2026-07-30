@@ -19,6 +19,40 @@ import { parseAddresses, type GmailMessageMeta } from "@/lib/gmail";
 
 export const VIP_KEY = "mail_vip";
 export const DEMOTE_KEY = "mail_demote";
+export const IDENTITY_KEY = "mail_identities";
+
+/**
+ * Every address that IS the owner.
+ *
+ * This has to be a set, not one string. A Google Workspace "Internal" OAuth app
+ * can only be authorized by accounts inside that Workspace, so the personal
+ * Gmail can't be granted directly — it forwards into the Workspace mailbox
+ * instead. Forwarded mail keeps its ORIGINAL `To:`, so matching only against
+ * the mailbox we authenticated as would read every forwarded message as
+ * "not direct to me" and quietly sink it below the surface threshold.
+ */
+export async function loadIdentities(
+  admin: SupabaseClient,
+  userId: string,
+  mailbox: string
+): Promise<string[]> {
+  const v = await getSettingValue<string[] | { addresses?: string[] }>(admin, userId, IDENTITY_KEY);
+  const extra = Array.isArray(v) ? v : (v?.addresses ?? []);
+  const all = [mailbox, process.env.OWNER_EMAIL ?? "", ...extra]
+    .map((s) => (s ?? "").trim().toLowerCase())
+    .filter(Boolean);
+  return [...new Set(all)];
+}
+
+export async function saveIdentities(
+  admin: SupabaseClient,
+  userId: string,
+  addresses: string[]
+): Promise<void> {
+  await setSettingValue(admin, userId, IDENTITY_KEY, {
+    addresses: addresses.map((s) => s.trim().toLowerCase()).filter(Boolean),
+  });
+}
 
 export type VipRules = {
   /** Exact addresses, e.g. "jane@acme.com". */
@@ -102,19 +136,30 @@ export function isVipSender(from: { name: string; email: string } | null, vip: V
 
 export function deterministicSignals(
   msg: GmailMessageMeta,
-  mailbox: string,
+  /** Every address that is the owner (see loadIdentities). A bare string is
+   *  accepted so callers with a single mailbox stay simple. */
+  identities: string | string[],
   vip: VipRules,
   demote: DemoteRules,
   threadOthersLast?: boolean
 ): Signals {
   const h = msg.headers;
-  const me = mailbox.toLowerCase();
+  const me = new Set(
+    (Array.isArray(identities) ? identities : [identities]).map((s) => s.toLowerCase())
+  );
   const from = parseAddresses(h.from)[0] ?? null;
   const to = parseAddresses(h.to);
   const cc = parseAddresses(h.cc);
 
-  const inTo = to.some((a) => a.email === me);
-  const inCc = cc.some((a) => a.email === me);
+  // Forwarding target counts as delivery to me, but never as evidence that the
+  // sender addressed me personally — that must come from To:/Cc:.
+  const forwardedToMe = [
+    ...parseAddresses(h["delivered-to"]),
+    ...parseAddresses(h["x-forwarded-to"]),
+  ].some((a) => me.has(a.email));
+
+  const inTo = to.some((a) => me.has(a.email));
+  const inCc = cc.some((a) => me.has(a.email));
   const recipients = to.length + cc.length;
 
   const bulk =
@@ -132,7 +177,10 @@ export function deterministicSignals(
 
   return {
     vip: isVipSender(from, vip),
-    direct: inTo && recipients <= 5,
+    // A forwarded message whose To:/Cc: we can't match is still plausibly for
+    // me — treat a small recipient list as direct rather than penalising the
+    // whole forwarded stream.
+    direct: (inTo || (forwardedToMe && !inCc)) && recipients <= 5,
     ccOnly: inCc && !inTo,
     bulk,
     automated: !!h["auto-submitted"] && h["auto-submitted"] !== "no",
@@ -149,15 +197,19 @@ export function deterministicSignals(
  * from the thread's messages without another fetch when the caller already has
  * them. `msgs` must be the whole thread, oldest first.
  */
-export function othersSpokeLast(msgs: GmailMessageMeta[], mailbox: string): boolean {
+export function othersSpokeLast(
+  msgs: GmailMessageMeta[],
+  identities: string | string[]
+): boolean {
   if (!msgs.length) return false;
+  const me = new Set(
+    (Array.isArray(identities) ? identities : [identities]).map((s) => s.toLowerCase())
+  );
   const last = msgs[msgs.length - 1];
   const from = parseAddresses(last.headers.from)[0];
   if (!from) return false;
-  const iEverSpoke = msgs.some(
-    (m) => (parseAddresses(m.headers.from)[0]?.email ?? "") === mailbox.toLowerCase()
-  );
-  return iEverSpoke && from.email !== mailbox.toLowerCase();
+  const iEverSpoke = msgs.some((m) => me.has(parseAddresses(m.headers.from)[0]?.email ?? ""));
+  return iEverSpoke && !me.has(from.email);
 }
 
 // ---- LLM content pass --------------------------------------------------------

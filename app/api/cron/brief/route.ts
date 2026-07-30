@@ -256,19 +256,6 @@ export async function GET(req: Request) {
     error: tgHealth.error,
   });
 
-  const { count: emailEver } = await admin
-    .from("items")
-    .select("id", { count: "exact", head: true })
-    .eq("user_id", owner.id)
-    .eq("source", "email");
-  await reportSourceStatus(admin, owner.id, {
-    source: "email",
-    label: "Forward-to-brain",
-    connected: (emailEver ?? 0) > 0,
-    error: null,
-    detail: { allTime: emailEver ?? 0 },
-  });
-
   const statusRows = await loadSourceStatus(admin, owner.id);
   const footer = coverageFooter(statusRows, now.getTime());
 

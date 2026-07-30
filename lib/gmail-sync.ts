@@ -19,6 +19,7 @@ import {
   canSkipContentPass,
   deterministicSignals,
   loadDemote,
+  loadIdentities,
   loadVip,
   othersSpokeLast,
   readMailContent,
@@ -110,23 +111,23 @@ async function ingestMessage(
   msg: GmailMessageMeta,
   vip: Awaited<ReturnType<typeof loadVip>>,
   demote: Awaited<ReturnType<typeof loadDemote>>,
+  identities: string[],
   todayISO: string
 ): Promise<{ ranked: Ranked; inflowId: string | null }> {
-  const mailbox = account.email.toLowerCase();
 
   // Thread state ("do I owe a reply?") only matters for non-bulk mail that is
   // part of a conversation — skip the extra API call otherwise.
   let othersLast: boolean | undefined;
-  const pre = deterministicSignals(msg, mailbox, vip, demote);
+  const pre = deterministicSignals(msg, identities, vip, demote);
   if (!pre.bulk && !pre.promotionsLabel && pre.threadReply) {
     try {
-      othersLast = othersSpokeLast(await getThreadMeta(token, msg.threadId), mailbox);
+      othersLast = othersSpokeLast(await getThreadMeta(token, msg.threadId), identities);
     } catch {
       othersLast = undefined; // thread fetch is best-effort
     }
   }
 
-  const signals = deterministicSignals(msg, mailbox, vip, demote, othersLast);
+  const signals = deterministicSignals(msg, identities, vip, demote, othersLast);
   const content = canSkipContentPass(signals)
     ? {
         importance: 0.1,
@@ -298,6 +299,10 @@ export async function syncMailbox(
 
     const vip = await loadVip(admin, userId);
     const demote = await loadDemote(admin, userId);
+    // Every address that is "me" — the authenticated mailbox plus any account
+    // that forwards into it (the personal Gmail, which an Internal OAuth app
+    // cannot be granted directly).
+    const identities = await loadIdentities(admin, userId, account.email);
     const todayISO = new Date().toISOString().slice(0, 10);
 
     const metas = (
@@ -319,6 +324,7 @@ export async function syncMailbox(
         msg,
         vip,
         demote,
+        identities,
         todayISO
       );
       base.inserted += 1;

@@ -58,7 +58,18 @@ export const DECLARED_SOURCES: {
   { source: "calendar", label: "Calendars", scope: "declared", kind: "pull" },
   { source: "telegram", label: "Telegram", scope: "declared", kind: "push" },
   { source: "granola", label: "Granola", scope: "declared", kind: "pull" },
-  { source: "email", label: "Forward-to-brain", scope: "declared", kind: "push" },
+  // RETIRED 2026-07-29. vault@manhartgroup.com ran on Cloudflare Email Routing,
+  // which needs the Cloudflare MX records on the zone apex. Google Workspace
+  // took those over, so the channel can no longer receive mail at all. It was
+  // always a stand-in for real Gmail access (v1.4: "v4.1 moves to full OAuth"),
+  // and workstream A is that replacement. Shown as out, never silently missing.
+  {
+    source: "email",
+    label: "Forward-to-brain",
+    scope: "out",
+    kind: "push",
+    note: "retired — superseded by Gmail OAuth",
+  },
   {
     source: "imessage",
     label: "iMessage",
