@@ -44,6 +44,62 @@ export async function loadIdentities(
   return [...new Set(all)];
 }
 
+export const STREAMS_KEY = "mail_streams";
+
+/**
+ * Gmail label name → the logical inflow stream that label represents.
+ *
+ * Google refuses to let an unverified External app hold `gmail.readonly` (it's
+ * a restricted scope), and a Workspace Internal app can't be granted to a
+ * consumer account — so the personal mailbox reaches the brain by forwarding
+ * into the Workspace one. A filter there tags the forwarded mail, and this map
+ * turns that tag back into "this is the personal stream", which is what keeps
+ * the two streams reporting separately in the coverage panel instead of
+ * collapsing into one undifferentiated Gmail blob.
+ */
+export const DEFAULT_STREAM_LABEL = "via-personal";
+
+export async function loadStreamMap(
+  admin: SupabaseClient,
+  userId: string
+): Promise<Record<string, string>> {
+  const v = await getSettingValue<Record<string, string>>(admin, userId, STREAMS_KEY);
+  const out: Record<string, string> = {};
+  for (const [label, addr] of Object.entries(v ?? {})) {
+    if (label && typeof addr === "string" && addr) out[label.toLowerCase()] = addr.toLowerCase();
+  }
+  return out;
+}
+
+export async function saveStreamMap(
+  admin: SupabaseClient,
+  userId: string,
+  map: Record<string, string>
+): Promise<void> {
+  await setSettingValue(admin, userId, STREAMS_KEY, map);
+}
+
+/**
+ * Which stream did this message arrive on?
+ *
+ * Label first — it's explicit, set by the owner's own filter, and survives odd
+ * header shapes (CC, BCC, mailing lists) that header-sniffing gets wrong.
+ * Falls back to the mailbox we actually fetched from.
+ */
+export function resolveStream(
+  labelIds: string[],
+  labelNames: Map<string, string>,
+  streamMap: Record<string, string>,
+  mailbox: string
+): string {
+  for (const id of labelIds) {
+    const name = (labelNames.get(id) ?? id).toLowerCase();
+    const stream = streamMap[name];
+    if (stream) return stream;
+  }
+  return mailbox.toLowerCase();
+}
+
 export async function saveIdentities(
   admin: SupabaseClient,
   userId: string,

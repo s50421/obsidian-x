@@ -134,6 +134,18 @@ export async function getMessageMeta(token: string, id: string): Promise<GmailMe
   return toMeta(raw);
 }
 
+/**
+ * User-created labels resolve to opaque ids (`Label_12`) in `labelIds`, not to
+ * their names — so attributing a message to a stream by label needs this map.
+ * System labels (INBOX, SENT, CATEGORY_*) are returned by name.
+ */
+export async function listLabels(token: string): Promise<Map<string, string>> {
+  const raw = await api<{ labels?: { id: string; name: string }[] }>(token, "/labels");
+  const byId = new Map<string, string>();
+  for (const l of raw.labels ?? []) byId.set(l.id, l.name);
+  return byId;
+}
+
 /** The current mailbox cursor — the starting point for incremental sync. */
 export async function getProfile(
   token: string

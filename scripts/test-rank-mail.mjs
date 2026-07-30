@@ -27,6 +27,7 @@ const {
   canSkipContentPass,
   othersSpokeLast,
   isVipSender,
+  resolveStream,
   SURFACE_THRESHOLD,
 } = await import("../lib/rank-mail.ts");
 
@@ -310,6 +311,40 @@ test("a forwarded newsletter is still bulk", () => {
   assert.equal(s.bulk, true);
   const r = scoreMail(s, read({ importance: 1, deadline: true, confidence: 1 }));
   assert.ok(r.score < SURFACE_THRESHOLD, `forwarding must not launder bulk (got ${r.score})`);
+});
+
+// --- stream attribution -------------------------------------------------------
+// Forwarded personal mail lands inside the Workspace mailbox but must still be
+// counted as its own inflow, or the coverage panel collapses two sources into
+// one and stops being able to show either honestly.
+
+test("stream resolves from the Gmail label, not the mailbox", () => {
+  const labels = new Map([
+    ["Label_7", "via-personal"],
+    ["Label_8", "Receipts"],
+  ]);
+  const map = { "via-personal": ME };
+
+  assert.equal(
+    resolveStream(["INBOX", "Label_7"], labels, map, WORK),
+    ME,
+    "a labelled message belongs to the personal stream"
+  );
+  assert.equal(
+    resolveStream(["INBOX", "Label_8"], labels, map, WORK),
+    WORK,
+    "an unrelated label falls back to the mailbox"
+  );
+  assert.equal(resolveStream(["INBOX"], labels, map, WORK), WORK, "no label → the mailbox");
+  assert.equal(resolveStream([], labels, {}, WORK), WORK, "no configured streams → the mailbox");
+});
+
+test("stream label matching is case-insensitive and survives an unresolved id", () => {
+  const labels = new Map([["Label_7", "Via-Personal"]]);
+  assert.equal(resolveStream(["Label_7"], labels, { "via-personal": ME }, WORK), ME);
+  // If the labels call failed we have ids but no names — must not crash, and
+  // must fall back rather than mis-attribute.
+  assert.equal(resolveStream(["Label_7"], new Map(), { "via-personal": ME }, WORK), WORK);
 });
 
 test("othersSpokeLast recognises every one of my addresses as me", () => {

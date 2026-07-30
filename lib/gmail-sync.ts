@@ -11,6 +11,7 @@ import {
   getProfile,
   getThreadMeta,
   listHistoryAdded,
+  listLabels,
   listMessageIds,
   parseAddresses,
   type GmailMessageMeta,
@@ -20,9 +21,11 @@ import {
   deterministicSignals,
   loadDemote,
   loadIdentities,
+  loadStreamMap,
   loadVip,
   othersSpokeLast,
   readMailContent,
+  resolveStream,
   scoreMail,
   MIN_CONFIDENCE,
   SURFACE_THRESHOLD,
@@ -58,6 +61,8 @@ export type SyncResult = {
   ranked: number;
   autoCreated: number;
   skippedLowConfidence: number;
+  /** Messages ingested per logical stream, so coverage can report each one. */
+  streams: Record<string, number>;
   error?: string;
 };
 
@@ -112,6 +117,9 @@ async function ingestMessage(
   vip: Awaited<ReturnType<typeof loadVip>>,
   demote: Awaited<ReturnType<typeof loadDemote>>,
   identities: string[],
+  /** The logical inflow stream this message belongs to (see resolveStream) —
+   *  the personal address for forwarded mail, else the mailbox itself. */
+  stream: string,
   todayISO: string
 ): Promise<{ ranked: Ranked; inflowId: string | null }> {
 
@@ -158,7 +166,9 @@ async function ingestMessage(
         user_id: userId,
         source: "gmail",
         external_id: msg.id,
-        account: account.email,
+        // `account` is the LOGICAL stream, not the mailbox we fetched from —
+        // that's what lets forwarded personal mail report as its own source.
+        account: stream,
         ts: new Date(msg.internalDate || Date.now()).toISOString(),
         sender: msg.headers.from ?? null,
         participants,
@@ -169,6 +179,7 @@ async function ingestMessage(
           threadId: msg.threadId,
           historyId: msg.historyId ?? null,
           rfcMessageId: msg.headers["message-id"] ?? null,
+          mailbox: account.email,
         },
         ranked_score: ranked.score,
         ranked_reason: {
@@ -251,6 +262,7 @@ export async function syncMailbox(
     ranked: 0,
     autoCreated: 0,
     skippedLowConfidence: 0,
+    streams: {},
   };
 
   let token: string;
@@ -303,6 +315,11 @@ export async function syncMailbox(
     // that forwards into it (the personal Gmail, which an Internal OAuth app
     // cannot be granted directly).
     const identities = await loadIdentities(admin, userId, account.email);
+    const streamMap = await loadStreamMap(admin, userId);
+    // Only worth a labels call if the owner has actually configured a stream.
+    const labelNames = Object.keys(streamMap).length
+      ? await listLabels(token).catch(() => new Map<string, string>())
+      : new Map<string, string>();
     const todayISO = new Date().toISOString().slice(0, 10);
 
     const metas = (
@@ -316,6 +333,7 @@ export async function syncMailbox(
     ).filter((m): m is GmailMessageMeta => !!m);
 
     for (const msg of metas) {
+      const stream = resolveStream(msg.labelIds, labelNames, streamMap, account.email);
       const { ranked, inflowId } = await ingestMessage(
         admin,
         userId,
@@ -325,9 +343,11 @@ export async function syncMailbox(
         vip,
         demote,
         identities,
+        stream,
         todayISO
       );
       base.inserted += 1;
+      base.streams[stream] = (base.streams[stream] ?? 0) + 1;
       if (ranked.score >= SURFACE_THRESHOLD) base.ranked += 1;
       // A confident-enough score is required to surface. Low-confidence reads
       // are kept in inflow for /ops tuning and never reach the brief.
@@ -349,8 +369,12 @@ export async function syncMailbox(
 
 /**
  * Sync every connected mailbox and report coverage. The parent `gmail` row
- * aggregates; each mailbox also gets its own channel row so the panel can show
- * per-mailbox health once more than one is connected.
+ * aggregates; each logical STREAM gets its own channel row.
+ *
+ * Stream, not mailbox, is the right unit here: forwarded personal mail arrives
+ * inside the Workspace mailbox but is a separate inflow the owner wants to see
+ * counted on its own. Reporting per mailbox would collapse the two and hide
+ * exactly the thing the coverage panel exists to show.
  */
 export async function syncAllMailboxes(
   admin: SupabaseClient,
@@ -373,36 +397,68 @@ export async function syncAllMailboxes(
 
   const results: SyncResult[] = [];
   for (const account of accounts) {
-    const r = await syncMailbox(admin, userId, account, opts);
-    results.push(r);
-    await reportSourceStatus(admin, userId, {
-      source: "gmail",
-      channel: account.email,
-      label: account.email,
-      connected: !r.error,
-      error: r.error ?? null,
-      detail: { mode: r.mode, seen: r.seen, inserted: r.inserted },
-    });
+    results.push(await syncMailbox(admin, userId, account, opts));
   }
 
-  // Trailing-24h count straight off the ledger — the number the brief prints.
   const since = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
-  const { count } = await admin
+
+  // One channel row per logical stream, counted straight off the ledger so the
+  // number survives a run that ingested nothing.
+  const { data: recent } = await admin
     .from("inflow_events")
-    .select("id", { count: "exact", head: true })
+    .select("account")
     .eq("user_id", userId)
     .eq("source", "gmail")
     .gte("ts", since);
+
+  const per24h: Record<string, number> = {};
+  for (const r of recent ?? []) {
+    const k = (r.account as string) ?? "unknown";
+    per24h[k] = (per24h[k] ?? 0) + 1;
+  }
+
+  // Every stream we know about: ones seen this run, ones seen in the last 24h,
+  // and every connected mailbox (so a silent stream still has a row rather than
+  // disappearing from the panel).
+  const streams = new Set<string>([
+    ...accounts.map((a) => a.email.toLowerCase()),
+    ...Object.keys(per24h),
+    ...results.flatMap((r) => Object.keys(r.streams)),
+  ]);
+
+  // A mailbox-level failure belongs on every stream that arrives through it.
+  const errorFor = (stream: string): string | null => {
+    const owning = results.find(
+      (r) => r.mailbox.toLowerCase() === stream || Object.hasOwn(r.streams, stream)
+    );
+    return owning?.error ?? results.find((r) => r.error)?.error ?? null;
+  };
+
+  for (const stream of streams) {
+    const isMailbox = accounts.some((a) => a.email.toLowerCase() === stream);
+    const err = errorFor(stream);
+    await reportSourceStatus(admin, userId, {
+      source: "gmail",
+      channel: stream,
+      label: isMailbox ? stream : `${stream} (forwarded)`,
+      connected: !err,
+      events24h: per24h[stream] ?? 0,
+      error: err,
+    });
+  }
+
+  const count = (recent ?? []).length;
 
   const errors = results.filter((r) => r.error);
   await reportSourceStatus(admin, userId, {
     source: "gmail",
     label: "Gmail",
     connected: results.some((r) => !r.error),
-    events24h: count ?? 0,
+    events24h: count,
     error: errors.length ? errors.map((e) => `${e.mailbox}: ${e.error}`).join("; ") : null,
     detail: {
       mailboxes: accounts.length,
+      streams: [...streams],
       autoCreated: results.reduce((a, r) => a + r.autoCreated, 0),
     },
   });
