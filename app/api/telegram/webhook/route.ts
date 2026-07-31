@@ -18,7 +18,21 @@ import { JUNK_ARCHIVE_SCORE } from "@/lib/title-standard.mjs";
 import { senderName, type InflowRow as LetterInflowRow } from "@/lib/letter";
 import { generateDraft, loadDrafts } from "@/lib/letter-drafts";
 import { logLlmUsage } from "@/lib/usage";
-import { sendMessage, answerCallbackQuery, editMessageText } from "@/lib/telegram";
+import {
+  sendMessage,
+  answerCallbackQuery,
+  editMessageText,
+  downloadFile,
+  sendChatAction,
+} from "@/lib/telegram";
+import { transcribeAudio } from "@/lib/transcribe";
+import {
+  loadRecentTurns,
+  recordTurn,
+  renderContext,
+  lastPendingCapture,
+  pruneConversation,
+} from "@/lib/conversation";
 import {
   resolveOwnerTz,
   isValidIanaTimeZone,
@@ -45,11 +59,15 @@ const OK = NextResponse.json({ ok: true });
 
 type TgUser = { id: number };
 type TgChat = { id: number };
+type TgVoice = { file_id: string; duration?: number; mime_type?: string };
 type TgMessage = {
   message_id: number;
   from?: TgUser;
   chat: TgChat;
   text?: string;
+  voice?: TgVoice;
+  audio?: TgVoice;
+  caption?: string;
 };
 type TgCallback = {
   id: string;
@@ -117,6 +135,8 @@ export async function POST(req: Request) {
   try {
     if (update.callback_query) {
       await handleCallback(admin, owner.id, update.callback_query);
+    } else if (update.message?.voice || update.message?.audio) {
+      await handleVoice(admin, owner.id, update.message);
     } else if (update.message && typeof update.message.text === "string") {
       await handleMessage(admin, owner.id, update.message);
     }
@@ -133,7 +153,9 @@ export async function POST(req: Request) {
 async function handleMessage(
   admin: SupabaseClient,
   userId: string,
-  msg: TgMessage
+  msg: TgMessage,
+  /** Set when this text came from a transcribed voice note. */
+  voiceMeta: Record<string, unknown> = {}
 ): Promise<void> {
   const text = (msg.text ?? "").trim();
   if (!text) return;
@@ -149,10 +171,27 @@ async function handleMessage(
   }
 
   const today = new Date().toISOString().slice(0, 10);
-  const intent = await interpretIntent(text, today);
+
+  // v4.2.1 — the bot is a conversation now. Recent turns go to the intent
+  // model so a follow-up ("save them separately") resolves against what was
+  // just said instead of being treated as a brand-new note.
+  const turns = await loadRecentTurns(admin, userId);
+  await recordTurn(admin, userId, "user", text, voiceMeta);
+
+  const intent = await interpretIntent(text, today, renderContext(turns));
   await logLlmUsage(admin, userId, "intent", intent.usage);
 
   switch (intent.intent) {
+    case "refine":
+      // The owner's RAW words, deliberately not `intent.target`. The router's
+      // paraphrase is lossy in a way that actually changes the outcome:
+      // "Save them as two separate things" reads as an INSTRUCTION and splits
+      // correctly, while its own rewrite ("save stage phone call and resume as
+      // two separate tasks") reads as a DESCRIPTION of one task and comes back
+      // as a single item. Measured, twice each. When the owner states how they
+      // want something filed, use what they actually said.
+      await handleRefine(admin, userId, text);
+      break;
     case "complete_all":
       await promptBulkDone(admin, userId); // risky -> Yes/No
       break;
@@ -163,7 +202,7 @@ async function handleMessage(
       await handleReopen(admin, userId, intent.target || text);
       break;
     case "ask":
-      await runAsk(userId, intent.query || text);
+      await runAsk(admin, userId, intent.query || text);
       break;
     case "clickup":
       await handleClickUp(admin, userId, intent.target || text);
@@ -365,7 +404,14 @@ async function promptSave(
     return;
   }
 
-  await sendMessage(`${summary ? `📝 ${summary}?` : "📝 Save this?"}\n\n“${preview}”`, {
+  // Strip trailing punctuation before adding the question mark — the model's
+  // summary usually ends in a full stop, which read as "…and resume.?".
+  const ask = summary ? `📝 ${summary.replace(/[.!?]+\s*$/, "")}?` : "📝 Save this?";
+  const readback = `${ask}\n\n“${preview}”`;
+  // Recorded so a follow-up ("save them as two separate things") can see what
+  // was actually offered.
+  await recordTurn(admin, userId, "assistant", readback, { proposalId: p.id });
+  await sendMessage(readback, {
     parse_mode: "plain",
     reply_markup: {
       inline_keyboard: [
@@ -497,6 +543,128 @@ async function captureAndSummarize(
   return { outcome, summary };
 }
 
+
+// ---- v4.2.1: voice notes -------------------------------------------------------
+
+// A voice note is just another way to say the same things. It is transcribed
+// and then run through the IDENTICAL intent pipeline as typed text, so
+// everything the bot can do by text it can do by voice.
+//
+// The transcript is echoed back before anything is acted on: speech recognition
+// misfires, and silently filing a mis-heard note would be exactly the
+// "half-right data is worse than no data" failure the design laws warn about.
+async function handleVoice(
+  admin: SupabaseClient,
+  userId: string,
+  msg: TgMessage
+): Promise<void> {
+  const media = msg.voice ?? msg.audio;
+  if (!media) return;
+
+  void sendChatAction("typing");
+
+  const file = await downloadFile(media.file_id);
+  if (!file) {
+    await sendMessage("Couldn't download that voice note — try again?", { parse_mode: "plain" });
+    return;
+  }
+
+  // Telegram voice notes are OGG/Opus; forwarded audio can be m4a/mp3. Derive
+  // the format from the filename the API gives us, falling back to ogg.
+  const ext = (file.path.split(".").pop() ?? "").toLowerCase();
+  const format = ["ogg", "oga", "mp3", "m4a", "mp4", "wav", "webm"].includes(ext) ? ext : "ogg";
+
+  let transcript = "";
+  try {
+    const { text, usage } = await transcribeAudio(file.base64, format);
+    transcript = (text ?? "").trim();
+    await logLlmUsage(admin, userId, "transcribe", usage);
+  } catch (e) {
+    await sendMessage(`Couldn't transcribe that: ${e instanceof Error ? e.message : String(e)}`, {
+      parse_mode: "plain",
+    });
+    return;
+  }
+
+  if (!transcript) {
+    await sendMessage("I couldn't hear any speech in that one.", { parse_mode: "plain" });
+    return;
+  }
+
+  // Show what was heard, then act on it. If the transcript is wrong the owner
+  // can correct it in the next message — which now works, because the bot
+  // remembers this exchange.
+  await sendMessage(`🎤 “${transcript}”`, { parse_mode: "plain" });
+  await handleMessage(admin, userId, { ...msg, text: transcript }, { via: "voice" });
+}
+
+// ---- v4.2.1: follow-ups that adjust what just happened ---------------------------
+
+// "Save them as two separate things." / "No, make it a task." / "Actually due
+// Friday." These refer to the exchange immediately before, and used to be
+// answered with "I need more context" because every message was handled in
+// isolation.
+async function handleRefine(
+  admin: SupabaseClient,
+  userId: string,
+  instruction: string
+): Promise<void> {
+  const pending = await lastPendingCapture(admin, userId);
+
+  if (!pending) {
+    // Nothing to adjust — most likely the classifier over-reached, so fall
+    // back to treating it as a normal note rather than dropping it.
+    await promptSave(admin, userId, instruction, "");
+    return;
+  }
+
+  // Re-run the capture with the owner's instruction overriding the model's own
+  // filing judgement, and retire the superseded proposal so there's only ever
+  // one pending offer for the same text.
+  void sendChatAction("typing");
+  await rejectCaptureProposalById(admin, userId, pending.id);
+
+  const outcome = await captureText(userId, pending.text, "telegram", instruction);
+  void projectNewCaptures(admin, userId, outcome.created, "telegram");
+
+  const lines = outcome.created.map((c) => {
+    const due = c.due_at ? ` (due ${c.due_at.slice(0, 10)})` : "";
+    return `• ${c.item.type}: ${c.item.title}${due}`;
+  });
+  const reply =
+    outcome.created.length > 1
+      ? `🧠 Saved ${outcome.created.length} separate items:\n${lines.join("\n")}`
+      : `🧠 Saved:\n${lines.join("\n")}`;
+
+  await sendMessage(reply, {
+    parse_mode: "plain",
+    reply_markup: outcome.created.length
+      ? {
+          inline_keyboard: outcome.created
+            .slice(0, 5)
+            .map((c) => [
+              { text: `↩ Undo ${c.item.title.slice(0, 30)}`, callback_data: `undo:${c.item.id}` },
+            ]),
+        }
+      : undefined,
+  });
+  await recordTurn(admin, userId, "assistant", reply);
+  void pruneConversation(admin, userId);
+}
+
+// Quietly retire a superseded capture proposal (no owner-facing message).
+async function rejectCaptureProposalById(
+  admin: SupabaseClient,
+  userId: string,
+  proposalId: string
+): Promise<void> {
+  await admin
+    .from("proposals")
+    .update({ status: "rejected", decided_at: new Date().toISOString() })
+    .eq("id", proposalId)
+    .eq("user_id", userId)
+    .eq("status", "pending");
+}
 
 // ---- v4.2: "put that on my ClickUp board" -------------------------------------
 
@@ -698,13 +866,15 @@ async function rateLetter(
   }
 }
 
-async function runAsk(userId: string, question: string): Promise<void> {
+async function runAsk(admin: SupabaseClient, userId: string, question: string): Promise<void> {
   const { answer, sources } = await answerQuestion(userId, question);
   let reply = stripMarkdown(answer);
   if (sources.length) {
     reply += `\n\n📎 Sources:\n${sources.slice(0, 5).map((s) => `[${s.n}] ${s.title}`).join("\n")}`;
   }
   await sendMessage(reply, { parse_mode: "plain" });
+  await recordTurn(admin, userId, "assistant", reply);
+  void pruneConversation(admin, userId);
 }
 
 // Telegram messages are sent as plain text (dynamic/LLM content can't be trusted

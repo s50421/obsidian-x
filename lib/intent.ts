@@ -14,6 +14,11 @@ export type IntentKind =
   // something onto the task board, either a brand-new task or one already in
   // the brain.
   | "clickup"
+  // v4.2.1 — the owner is MODIFYING the exchange that just happened rather
+  // than starting a new one ("save them separately", "no, make it a task",
+  // "actually tomorrow"). Without this the bot answered a follow-up as if it
+  // were a fresh note and lost the thread.
+  | "refine"
   | "unknown";
 
 export type Intent = {
@@ -32,10 +37,16 @@ const KINDS: IntentKind[] = [
   "reopen",
   "ask",
   "clickup",
+  "refine",
   "unknown",
 ];
 
-export async function interpretIntent(text: string, todayISO: string): Promise<Intent> {
+export async function interpretIntent(
+  text: string,
+  todayISO: string,
+  /** Recent dialogue, oldest first, already rendered. Empty when there's none. */
+  context = ""
+): Promise<Intent> {
   const model = process.env.OPENROUTER_CLASSIFY_MODEL!;
   const system =
     `You are the intent router for a personal second-brain assistant. The owner ` +
@@ -43,12 +54,12 @@ export async function interpretIntent(text: string, todayISO: string): Promise<I
     `what they want. Today is ${todayISO}.\n` +
     `Return ONLY a JSON object:\n` +
     `{\n` +
-    `  "intent": one of ["save","complete","complete_all","reopen","ask","clickup","unknown"],\n` +
+    `  "intent": one of ["save","complete","complete_all","reopen","ask","clickup","refine","unknown"],\n` +
     `  "summary": one short sentence, addressed to the owner, describing what you'll do\n` +
     `             (e.g. "Save a task to pick up milk tomorrow", "Mark your dentist task done",\n` +
     `              "Reopen your rent task", "Answer what you owe on invoices",\n` +
     `              "Add the roof quote to your ClickUp board"),\n` +
-    `  "target": for "complete"/"reopen"/"clickup", the item they mean in their own words, else "",\n` +
+    `  "target": for "complete"/"reopen"/"clickup"/"refine", the item or adjustment they mean, else "",\n` +
     `  "query": for "ask" ONLY, the question to answer, else "",\n` +
     `  "confidence": number 0..1\n` +
     `}\n` +
@@ -63,6 +74,13 @@ export async function interpretIntent(text: string, todayISO: string): Promise<I
     `("reopen the rent task", "actually I didn't finish the report", "mark the dentist task not done").\n` +
     `- "ask": a genuine question or request to look something up in their notes ` +
     `("what did I say about X", "when's my meeting", "do I owe anything").\n` +
+    `- "refine": they are ADJUSTING the exchange that just happened, not starting ` +
+    `a new one. Look at the conversation above: if you just offered to save ` +
+    `something and they reply "save them as two separate things", "no, make it a ` +
+    `task", "actually make it due Friday", "split that up" — that is "refine". ` +
+    `Put their adjustment in "target". Pronouns with no antecedent in THIS ` +
+    `message ("them", "that", "it") are the strongest tell. If there is no recent ` +
+    `exchange to adjust, it is NOT refine.\n` +
     `- "clickup": they explicitly want something ON THEIR CLICKUP BOARD / task list ` +
     `("add this to clickup", "put the roof quote on my board", "make a clickup task to call the bank", ` +
     `"add to my task list"). The giveaway is naming the board/ClickUp/task-list as the DESTINATION. ` +
@@ -73,12 +91,24 @@ export async function interpretIntent(text: string, todayISO: string): Promise<I
     `Only pick complete/complete_all when they clearly report something as DONE, not when ` +
     `they are adding a new task.`;
 
+  // The recent exchange goes in as its own turn rather than being glued onto
+  // the message: the model must be able to tell what the owner just said from
+  // what was said before, or it starts "refining" brand-new messages.
+  const messages: { role: "system" | "user" | "assistant"; content: string }[] = [
+    { role: "system", content: system },
+  ];
+  if (context) {
+    messages.push({
+      role: "user",
+      content: `Recent conversation (for reference only — do NOT classify this):\n${context}`,
+    });
+    messages.push({ role: "assistant", content: "Understood — I'll use that as context." });
+  }
+  messages.push({ role: "user", content: `Classify ONLY this new message:\n${text}` });
+
   const { content, usage } = await chat(
     model,
-    [
-      { role: "system", content: system },
-      { role: "user", content: text },
-    ],
+    messages,
     { json: true, temperature: 0 }
   );
 

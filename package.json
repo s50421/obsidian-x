@@ -12,7 +12,7 @@
     "smoke": "node --env-file=.env.local scripts/smoke.mjs",
     "test:w2": "node --test scripts/test-retitle-core.mjs && node scripts/test-reprocess-e2e.mjs && node --experimental-strip-types --no-warnings scripts/test-apply-proposal.mjs",
     "test:v41": "node --experimental-strip-types --no-warnings scripts/test-rank-mail.mjs && node --experimental-strip-types --no-warnings scripts/test-oauth-state.mjs",
-    "test:v42": "node --experimental-strip-types --no-warnings scripts/test-letter.mjs && node --experimental-strip-types --no-warnings scripts/test-brief-window.mjs",
+    "test:v42": "node --experimental-strip-types --no-warnings scripts/test-letter.mjs && node --experimental-strip-types --no-warnings scripts/test-brief-window.mjs && node --experimental-strip-types --no-warnings scripts/test-conversation.mjs",
     "letter:sample": "node --experimental-strip-types --no-warnings scripts/test-letter.mjs --sample",
     "test:sec": "node --experimental-strip-types --no-warnings scripts/test-secure-compare.mjs"
   },

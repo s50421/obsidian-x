@@ -59,6 +59,34 @@ export async function checkTelegramHealth(): Promise<{ ok: boolean; error: strin
   return { ok: true, error: null };
 }
 
+// v4.2.1 — download a file the owner sent (voice note, audio). Two steps in
+// the Bot API: getFile resolves a file_id to a path, then the file lives on a
+// different host. Returns base64 for the multimodal transcriber.
+export async function downloadFile(fileId: string): Promise<{ base64: string; path: string } | null> {
+  const t = token();
+  if (!t) return null;
+  const info = await api<{ file_path?: string }>("getFile", { file_id: fileId });
+  if (!info?.file_path) return null;
+  try {
+    const res = await fetch(`https://api.telegram.org/file/bot${t}/${info.file_path}`, {
+      signal: AbortSignal.timeout(30000),
+    });
+    if (!res.ok) return null;
+    const buf = Buffer.from(await res.arrayBuffer());
+    return { base64: buf.toString("base64"), path: info.file_path };
+  } catch {
+    return null;
+  }
+}
+
+// Show "recording/typing" while a slow step runs, so the owner knows the bot
+// heard them. Best-effort and fire-and-forget.
+export async function sendChatAction(action: "typing" | "upload_voice" = "typing"): Promise<void> {
+  const chatId = process.env.TELEGRAM_CHAT_ID;
+  if (!chatId) return;
+  await api("sendChatAction", { chat_id: chatId, action });
+}
+
 // Send a message to the owner's chat (or an explicit chat_id). Markdown-parsed.
 export async function sendMessage(
   text: string,

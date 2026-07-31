@@ -239,7 +239,9 @@ export async function storeEnrichedItem(
 export async function captureText(
   userId: string,
   text: string,
-  source: string
+  source: string,
+  /** Owner instruction about how to file this one (see enrich). */
+  directive = ""
 ): Promise<CaptureOutcome> {
   const admin = createAdminClient();
   const { sensitive, text: cleanText } = detectSensitive(text);
@@ -275,7 +277,7 @@ export async function captureText(
     ];
     confidence = 1;
   } else {
-    const r = await enrich(cleanText, today);
+    const r = await enrich(cleanText, today, directive);
     enriched = r.items;
     confidence = r.confidence;
     await logLlmUsage(admin, userId, "enrich", r.usage);

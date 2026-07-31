@@ -60,7 +60,7 @@ export type EnrichResult = {
   split: boolean;
 };
 
-export function buildEnrichSystemPrompt(todayISO: string): string {
+export function buildEnrichSystemPrompt(todayISO: string, directive = ""): string {
   return [
     `You process a raw captured note for a personal knowledge base. Today is ${todayISO}.`,
     `The owner never organises anything by hand: your output IS the filing.`,
@@ -99,16 +99,42 @@ export function buildEnrichSystemPrompt(todayISO: string): string {
     JUNK_RULES,
     ``,
     CONFIDENCE_RULES,
+    // The owner's own instruction goes LAST and outranks everything above it.
+    // Putting it in the user message wasn't enough: SPLIT_RULES is deliberately
+    // conservative, so "save them as two separate things" lost to it and the
+    // capture came back as one item. When the owner states how they want
+    // something filed, that is better evidence than the classifier's judgement.
+    ...(directive
+      ? [
+          ``,
+          `OWNER OVERRIDE — the owner has explicitly told you how to file this`,
+          `capture. It takes precedence over every rule above, including the`,
+          `conservative split guidance. Follow it exactly:`,
+          `"${directive.replace(/"/g, "'")}"`,
+          `If they asked for separate items, return one entry per distinct thing`,
+          `they named, even if you would otherwise have kept them together.`,
+        ]
+      : []),
   ].join("\n");
 }
 
-export async function enrich(text: string, todayISO: string): Promise<EnrichResult> {
+export async function enrich(
+  text: string,
+  todayISO: string,
+  /**
+   * v4.2.1 — an explicit instruction from the owner about how to file THIS
+   * capture ("split into separate items", "make it a task due Friday").
+   * Overrides the model's own judgement, because the owner saying it out loud
+   * is better evidence than the classifier's guess.
+   */
+  directive = ""
+): Promise<EnrichResult> {
   const model = process.env.OPENROUTER_CLASSIFY_MODEL!;
 
   const { content: rawText, usage } = await chat(
     model,
     [
-      { role: "system", content: buildEnrichSystemPrompt(todayISO) },
+      { role: "system", content: buildEnrichSystemPrompt(todayISO, directive) },
       { role: "user", content: text },
     ],
     { json: true, temperature: 0 }
