@@ -205,7 +205,7 @@ async function handleMessage(
       await runAsk(admin, userId, intent.query || text);
       break;
     case "clickup":
-      await handleClickUp(admin, userId, intent.target || text);
+      await handleClickUp(admin, userId, intent.target || text, intent.context);
       break;
     case "unknown":
       // Didn't parse as a clear intent — if it reads like a timezone question,
@@ -683,15 +683,22 @@ async function rejectCaptureProposalById(
 async function handleClickUp(
   admin: SupabaseClient,
   userId: string,
-  target: string
+  target: string,
+  /** A project/course the owner named ("as a CANVAS task"). Sharpens the search
+   *  and tags whatever gets created. */
+  namedContext = ""
 ): Promise<void> {
   if (!clickupConfigured()) {
     await sendMessage("ClickUp isn't configured — no API token set.", { parse_mode: "plain" });
     return;
   }
 
-  // Does this refer to something already captured?
-  const matches = await resolveMatches(admin, userId, target, "open");
+  // Does this refer to something already captured? The named context goes into
+  // the query on purpose: "resume" alone missed the existing "Canvas — resume",
+  // while "canvas resume" finds it. The grouping the owner named is signal, not
+  // filler to be stripped out.
+  const searchFor = namedContext ? `${namedContext} ${target}` : target;
+  const matches = await resolveMatches(admin, userId, searchFor, "open");
   const top = matches[0]?.similarity ?? 0;
   const cluster = matches.filter((m) => m.similarity >= top - COMPLETE_MARGIN);
 
@@ -714,7 +721,20 @@ async function handleClickUp(
 
   // Nothing matched — treat it as a new task. Captured first so the brain
   // stays the source of truth and the board stays a projection of it.
-  const outcome = await captureText(userId, target, "telegram");
+  // Carry the named context into BOTH the content and a filing instruction.
+  // Measured: the directive alone isn't enough — "resume" on its own is too
+  // thin to title, so it came back as "Untitled capture" with no tags however
+  // the instruction was phrased. Prefixing the content ("canvas: resume")
+  // gives the pipeline something real to work with, and then the tag lands.
+  // "going onto a task board" is stated because otherwise the same input types
+  // as `reference`, which is wrong for something the owner is putting on a
+  // kanban.
+  const directive = namedContext
+    ? `This belongs to "${namedContext}". Add "${namedContext}" as the free-form tag and ` +
+      `work it into the title. It is going onto a task board, so type it as a task.`
+    : "";
+  const captureBody = namedContext ? `${namedContext}: ${target}` : target;
+  const outcome = await captureText(userId, captureBody, "telegram", directive);
   const created = outcome.created[0];
   if (!created) {
     await sendMessage("Couldn't work out what to add — try naming the task.", { parse_mode: "plain" });
@@ -727,7 +747,7 @@ async function handleClickUp(
   // the capture and ask which existing item was meant instead.
   if (created.item.title === UNTITLED_TITLE) {
     await undoItem(admin, userId, created.item.id);
-    await offerItemsForClickUp(admin, userId, target);
+    await offerItemsForClickUp(admin, userId, searchFor);
     return;
   }
 

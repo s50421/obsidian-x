@@ -25,6 +25,12 @@ export type Intent = {
   intent: IntentKind;
   summary: string; // short, human-readable read-back addressed to the owner
   target: string; // for "complete"/"reopen": the item the owner refers to, their words
+  /**
+   * A project/area/course the owner named as the GROUPING for this ("as a
+   * canvas task", "for the V-Bank deal", "under school"). Used to sharpen the
+   * semantic search AND to tag whatever gets created.
+   */
+  context: string;
   query: string; // for "ask": the question to answer
   confidence: number;
   usage: Usage;
@@ -44,8 +50,10 @@ const KINDS: IntentKind[] = [
 export async function interpretIntent(
   text: string,
   todayISO: string,
-  /** Recent dialogue, oldest first, already rendered. Empty when there's none. */
-  context = ""
+  /** Recent dialogue, oldest first, already rendered. Empty when there's none.
+   *  Named `history` to keep it distinct from the returned `context` field,
+   *  which is a project/area the owner named — a different thing entirely. */
+  history = ""
 ): Promise<Intent> {
   const model = process.env.OPENROUTER_CLASSIFY_MODEL!;
   const system =
@@ -61,6 +69,9 @@ export async function interpretIntent(
     `              "Add the roof quote to your ClickUp board"),\n` +
     `  "target": for "complete"/"reopen"/"clickup"/"refine", the item or adjustment they mean, else "",\n` +
     `  "query": for "ask" ONLY, the question to answer, else "",\n` +
+    `  "context": a project, course, client or area the owner named as the GROUPING ` +
+    `for this — "as a canvas task" -> "canvas", "for the V-Bank deal" -> "v-bank", ` +
+    `"under school" -> "school". Lowercase, one or two words, no filler. "" if none named.\n` +
     `  "confidence": number 0..1\n` +
     `}\n` +
     `Definitions:\n` +
@@ -97,10 +108,10 @@ export async function interpretIntent(
   const messages: { role: "system" | "user" | "assistant"; content: string }[] = [
     { role: "system", content: system },
   ];
-  if (context) {
+  if (history) {
     messages.push({
       role: "user",
-      content: `Recent conversation (for reference only — do NOT classify this):\n${context}`,
+      content: `Recent conversation (for reference only — do NOT classify this):\n${history}`,
     });
     messages.push({ role: "assistant", content: "Understood — I'll use that as context." });
   }
@@ -125,6 +136,8 @@ export async function interpretIntent(
   const summary = typeof parsed.summary === "string" ? parsed.summary.trim() : "";
   const target = typeof parsed.target === "string" ? parsed.target.trim() : "";
   const query = typeof parsed.query === "string" ? parsed.query.trim() : "";
+  const namedContext =
+    typeof parsed.context === "string" ? parsed.context.trim().toLowerCase().slice(0, 24) : "";
   const confidence = clamp01(Number(parsed.confidence));
 
   return {
@@ -132,6 +145,7 @@ export async function interpretIntent(
     summary,
     target,
     query,
+    context: namedContext,
     confidence: Number.isFinite(confidence) ? confidence : 0.6,
     usage,
   };
