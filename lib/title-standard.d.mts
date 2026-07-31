@@ -48,6 +48,7 @@ export declare const ENTITY_KINDS: string[];
 
 export declare const TITLE_MAX: number;
 export declare const CONFIDENCE_BAR: number;
+export declare const UNTITLED_TITLE: string;
 export declare const JUNK_CONFIDENCE_BAR: number;
 export declare const JUNK_ARCHIVE_SCORE: number;
 export declare const JUNK_REVIEW_SCORE: number;

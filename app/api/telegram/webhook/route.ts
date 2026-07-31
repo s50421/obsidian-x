@@ -14,7 +14,7 @@ import { projectNewCaptures } from "@/lib/task-projection";
 import { logAudit } from "@/lib/audit";
 import { secureEquals } from "@/lib/secure-compare";
 import { reportSourceStatus } from "@/lib/source-status";
-import { JUNK_ARCHIVE_SCORE } from "@/lib/title-standard.mjs";
+import { JUNK_ARCHIVE_SCORE, UNTITLED_TITLE } from "@/lib/title-standard.mjs";
 import { senderName, type InflowRow as LetterInflowRow } from "@/lib/letter";
 import { generateDraft, loadDrafts } from "@/lib/letter-drafts";
 import { logLlmUsage } from "@/lib/usage";
@@ -720,7 +720,55 @@ async function handleClickUp(
     await sendMessage("Couldn't work out what to add — try naming the task.", { parse_mode: "plain" });
     return;
   }
+
+  // If the pipeline couldn't write a real title, the input was too thin to
+  // make a task out of ("resume"). Putting "Untitled capture" on the board
+  // would be exactly the half-baked output the design laws forbid — so undo
+  // the capture and ask which existing item was meant instead.
+  if (created.item.title === UNTITLED_TITLE) {
+    await undoItem(admin, userId, created.item.id);
+    await offerItemsForClickUp(admin, userId, target);
+    return;
+  }
+
   await pushItemToClickUp(admin, userId, created.item.id);
+}
+
+// Couldn't resolve what the owner meant — let them tap it, the same pattern
+// handleComplete uses. Better one extra tap than a wrong task on the board.
+async function offerItemsForClickUp(
+  admin: SupabaseClient,
+  userId: string,
+  target: string
+): Promise<void> {
+  const { data: recent } = await admin
+    .from("items")
+    .select("id, title, external")
+    .eq("user_id", userId)
+    .eq("status", "open")
+    .is("valid_to", null)
+    .order("created_at", { ascending: false })
+    .limit(8);
+  const open = (recent ?? []).filter(
+    (r) => !(r.external as { clickup?: { id?: string } } | null)?.clickup?.id
+  );
+  if (!open.length) {
+    await sendMessage(
+      `I couldn't tell what “${target}” refers to, and there's nothing open to add. Try naming the task in full.`,
+      { parse_mode: "plain" }
+    );
+    return;
+  }
+  const prompt = `I wasn't sure what “${target}” meant. Which should go on the board?`;
+  await recordTurn(admin, userId, "assistant", prompt);
+  await sendMessage(prompt, {
+    parse_mode: "plain",
+    reply_markup: {
+      inline_keyboard: open.slice(0, 6).map((m) => [
+        { text: `📋 ${(m.title as string).slice(0, 40)}`, callback_data: `cu:${m.id}` },
+      ]),
+    },
+  });
 }
 
 // Create the ClickUp task for one item and report back with its link.
@@ -756,9 +804,10 @@ async function pushItemToClickUp(
     await sendMessage(`ClickUp failed: ${result.message}`, { parse_mode: "plain" });
     return;
   }
-  await sendMessage(`📋 On your ClickUp board: ${item.title}${result.url ? `\n${result.url}` : ""}`, {
-    parse_mode: "plain",
-  });
+  const done = `📋 On your ClickUp board: ${item.title}${result.url ? `\n${result.url}` : ""}`;
+  await recordTurn(admin, userId, "assistant", done);
+  await sendMessage(done, { parse_mode: "plain" });
+  void pruneConversation(admin, userId);
 }
 
 // ---- v4.2 letter buttons ------------------------------------------------------

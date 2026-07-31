@@ -95,11 +95,15 @@ async function buildPrepNotes(
   for (const e of soon) {
     try {
       const embedding = await embedText(e.summary, userId);
-      const { data } = await admin.rpc("match_items_v2", {
+      // match_neighbors_v2, NOT match_items_v2: the latter returns SETOF items
+      // and therefore carries no `similarity` column. Reading it gave
+      // undefined -> 0, so the threshold below was always false and prep notes
+      // could never appear. Silent dead code from the day it shipped.
+      const { data } = await admin.rpc("match_neighbors_v2", {
         query_embedding: embedding,
-        query_text: e.summary,
-        match_count: 2,
         owner: userId,
+        exclude_id: null,
+        match_count: 2,
       });
       const hit = (data ?? [])[0] as { title?: string; similarity?: number } | undefined;
       if (hit?.title && Number(hit.similarity ?? 0) >= PREP_MIN_SIMILARITY) {
