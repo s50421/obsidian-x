@@ -51,6 +51,26 @@ export async function projectionMode(
   return data.mode === "auto" ? "auto" : "ask";
 }
 
+/**
+ * The dial, resolved for ONE task.
+ *
+ * Owner rule (2026-08-02): "all tasks that are noted as to do with a due date
+ * in my brain should automatically exist in clickup." A dated task is a
+ * commitment the owner has already made to himself, so asking him to approve
+ * it again is asking the same question twice — this is the trust dial the v4.2
+ * brief always intended to be flipped, scoped to the class he named.
+ *
+ * An UNDATED task still follows the dial: "maybe someday" is exactly the kind
+ * of item that should not silently populate a kanban board.
+ *
+ * `off` still wins over everything. It is the kill switch, and a kill switch
+ * that a due date can override is not a kill switch.
+ */
+export function effectiveMode(dial: ProjectionMode, hasDueDate: boolean): ProjectionMode {
+  if (dial === "off") return "off";
+  return hasDueDate ? "auto" : dial;
+}
+
 /** Set the dial (there's no UI yet — scripts/ops or a future settings screen). */
 export async function setProjectionMode(
   admin: SupabaseClient,
@@ -90,10 +110,19 @@ export async function projectNewCaptures(
   const tasks = created.filter((c) => c.item.type === "task");
   if (!tasks.length) return out;
 
-  const mode = await projectionMode(admin, userId);
-  if (mode === "off") return out;
+  const dial = await projectionMode(admin, userId);
+  if (dial === "off") return out;
+
+  // The caller only carries id + type, so the due dates come from the rows that
+  // were just written. One query, not one per task.
+  const { data: dated } = await admin
+    .from("items")
+    .select("id,due_at")
+    .in("id", tasks.map((t) => t.item.id));
+  const hasDue = new Set((dated ?? []).filter((r) => r.due_at).map((r) => r.id as string));
 
   for (const t of tasks) {
+    const mode = effectiveMode(dial, hasDue.has(t.item.id));
     const proposal = await proposeClickUpTaskForItem(admin, userId, t.item.id, source);
     if (!proposal) continue;
     out.proposed += 1;
@@ -155,13 +184,26 @@ export async function loadProjectableTasks(
     (r) => !(r.external as { clickup?: { id?: string } } | null)?.clickup?.id
   );
   const nowMs = Date.now();
-  const tasks = unlinked.slice(0, limit).map((r) => ({
+  const toAction = (r: Record<string, unknown>): ActionItem => ({
     id: r.id as string,
     title: (r.title as string) ?? "(untitled)",
     due_at: (r.due_at as string) ?? null,
     overdue: r.due_at ? new Date(r.due_at as string).getTime() < nowMs : false,
-  }));
-  return { tasks, remaining: Math.max(0, unlinked.length - tasks.length) };
+  });
+
+  // The cap exists to protect the owner's attention, so it only applies to the
+  // items that will actually ask for it. A DATED task is auto-created under the
+  // owner's rule and costs no approval, so capping those would just delay the
+  // board for no benefit — "should automatically exist in clickup" means today,
+  // not five a day until the backlog clears.
+  const dated = unlinked.filter((r) => r.due_at).map(toAction);
+  const undatedAll = unlinked.filter((r) => !r.due_at);
+  const undated = undatedAll.slice(0, limit).map(toAction);
+
+  return {
+    tasks: [...dated, ...undated],
+    remaining: Math.max(0, undatedAll.length - undated.length),
+  };
 }
 
 export async function projectActionItems(
@@ -172,6 +214,8 @@ export async function projectActionItems(
   // Read the dial FIRST. Reporting "off" on the nothing-to-do path would be a
   // false statement about how the system is configured — the kind of small
   // ops-surface lie that later costs an hour of debugging the wrong thing.
+  // The dial. The per-item decision is effectiveMode(dial, hasDueDate) below —
+  // a dated task ignores 'ask' by owner rule.
   const mode = clickupConfigured() ? await projectionMode(admin, userId) : "off";
   const result: ProjectionResult = {
     mode,
@@ -216,9 +260,13 @@ export async function projectActionItems(
     }
     result.proposed += 1;
 
-    if (mode === "auto") {
+    // Per-item, not per-run: a dated task is created outright under the owner's
+    // rule, while an undated one still waits for a tap.
+    if (effectiveMode(mode, !!a.due_at) === "auto") {
       const applied = await applyProposal(admin, userId, proposal.id);
       if (applied.ok) result.created += 1;
+    } else {
+      await notifyClickUpProposal(proposal);
     }
   }
 
