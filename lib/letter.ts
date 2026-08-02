@@ -73,6 +73,22 @@ const WORTH_KNOWING_FLOOR = 30;
 const MAX_NEEDS_YOU = 7;
 const MAX_WORTH_KNOWING = 3;
 const MAX_ACTIONS = 8;
+/** How many messages one sender may contribute to NEEDS YOU. */
+const MAX_PER_SENDER = 2;
+
+/** Keep the top `n` per sender, preserving overall rank order. */
+export function capPerSender(rows: InflowRow[], n: number): InflowRow[] {
+  const seen = new Map<string, number>();
+  const out: InflowRow[] = [];
+  for (const r of rows) {
+    const key = senderName(r.sender).toLowerCase();
+    const count = seen.get(key) ?? 0;
+    if (count >= n) continue;
+    seen.set(key, count + 1);
+    out.push(r);
+  }
+  return out;
+}
 
 function timeFmt(tz: string, d: Date): string {
   return new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", minute: "2-digit" }).format(d);
@@ -108,14 +124,25 @@ export function wantsReply(r: InflowRow): boolean {
 
 // ---- section builders --------------------------------------------------------
 
+/** Mail subjects can be enormous — one Canvas notification repeated its full
+ *  course code twice and ran past 200 characters, which is unreadable on a
+ *  phone. Keep the informative head, drop the rest. */
+const SUBJECT_MAX = 78;
+
+export function tidySubject(subject: string | null): string {
+  const s = (subject ?? "").replace(/\s+/g, " ").trim();
+  if (!s) return "(no subject)";
+  if (s.length <= SUBJECT_MAX) return s;
+  // Cut on a word boundary so it doesn't end mid-token.
+  const cut = s.slice(0, SUBJECT_MAX);
+  const lastSpace = cut.lastIndexOf(" ");
+  return `${(lastSpace > 40 ? cut.slice(0, lastSpace) : cut).trim()}…`;
+}
+
 function sectionNeedsYou(rows: InflowRow[]): string {
   if (!rows.length) return "Nothing needs you.";
   return rows
-    .map((r) => {
-      const who = senderName(r.sender);
-      const subject = (r.subject ?? "(no subject)").trim();
-      return `• ${who} — ${subject}\n   → ${suggestedAction(r)}`;
-    })
+    .map((r) => `• ${senderName(r.sender)} — ${tidySubject(r.subject)}\n   → ${suggestedAction(r)}`)
     .join("\n");
 }
 
@@ -181,7 +208,7 @@ function sectionActions(items: ActionItem[]): string {
 
 function sectionWorthKnowing(rows: InflowRow[]): string {
   if (!rows.length) return "Nothing else of note.";
-  return rows.map((r) => `• ${senderName(r.sender)} — ${(r.subject ?? "(no subject)").trim()}`).join("\n");
+  return rows.map((r) => `• ${senderName(r.sender)} — ${tidySubject(r.subject)}`).join("\n");
 }
 
 /**
@@ -258,9 +285,14 @@ export function composeLetter(input: ComposeInput): Letter {
   const confident = inflow.filter(
     (r) => Number(r.ranked_reason?.confidence ?? 0) >= MIN_CONFIDENCE
   );
-  const needsYou = confident
-    .filter((r) => (r.ranked_score ?? 0) >= SURFACE_THRESHOLD)
-    .slice(0, MAX_NEEDS_YOU);
+  // One noisy sender must not eat the whole section. On 2026-08-01 all three
+  // NEEDS YOU slots were near-identical Canvas notifications, which is what a
+  // VIP floor does to an automated sender — the owner asked for those to always
+  // surface, so the fix is to show one and count the rest, not to drop them.
+  const needsYou = capPerSender(
+    confident.filter((r) => (r.ranked_score ?? 0) >= SURFACE_THRESHOLD),
+    MAX_PER_SENDER
+  ).slice(0, MAX_NEEDS_YOU);
   const needsYouIds = new Set(needsYou.map((r) => r.id));
   const worthKnowing = confident
     .filter(
@@ -310,7 +342,9 @@ export function composeLetter(input: ComposeInput): Letter {
         callback_data: `mdraft:${r.id}`,
       });
     }
-    row.push({ text: "✓ Handled", callback_data: `mdone:${r.id}` });
+    // Labelled, because three bare "✓ Handled" rows are indistinguishable —
+    // exactly what the 2026-08-02 letter looked like on the phone.
+    row.push({ text: `✓ ${label}`, callback_data: `mdone:${r.id}` });
     rows.push(row);
   }
 
@@ -378,11 +412,15 @@ export async function loadActionItems(
 ): Promise<ActionItem[]> {
   const todayStr = localDateStr(tz, now);
   const { end } = localDayBoundsUtc(tz, todayStr);
+  // type='task' ONLY. Anything with a due date used to qualify, so a dated
+  // EVENT ("Sandrine French pastry — weekend visit with Anna") was listed as an
+  // OVERDUE action item. An event you attend is not a task you failed to do.
   const { data } = await admin
     .from("items")
     .select("id,title,due_at")
     .eq("user_id", userId)
     .eq("status", "open")
+    .eq("type", "task")
     .is("valid_to", null)
     .not("due_at", "is", null)
     .lt("due_at", end)

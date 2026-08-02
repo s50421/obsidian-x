@@ -303,3 +303,51 @@ test("the briefing is plain text too — no markdown emphasis", () => {
   assert.ok(!/_[^_\n]+_/.test(briefing), "no _italics_ — parse_mode is plain");
   assert.ok(!/\*\*/.test(briefing));
 });
+
+// --- fixes driven by real screenshots (2026-08-02) -----------------------------
+
+const { tidySubject, capPerSender } = await import("../lib/letter.ts");
+
+test("REGRESSION: every Handled button is labelled with its sender", () => {
+  // The 2026-08-02 letter showed three identical bare "✓ Handled" rows — you
+  // could not tell which message each one belonged to.
+  const l = composeLetter(FULL);
+  const handled = l.keyboard.inline_keyboard.flat().filter((b) => b.text.startsWith("✓ "));
+  const decisionLabels = handled.map((b) => b.text);
+  assert.equal(new Set(decisionLabels).size, decisionLabels.length, "no two buttons may read the same");
+  assert.ok(decisionLabels.some((x) => x.includes("Beate")), "labelled by sender");
+});
+
+test("REGRESSION: an enormous subject is trimmed on a word boundary", () => {
+  const monster =
+    "MGMT_O 599A COMM_O 399A 101 2026SS AI for Business — Assignment Graded: " +
+    "Assignment #1 - Canvas Profile (Due July 11@11:59), MGMT_O 599A COMM_O 399A 101 2026SS AI for Business";
+  const out = tidySubject(monster);
+  assert.ok(out.length <= 80, `still ${out.length} chars`);
+  assert.ok(out.endsWith("…"));
+  assert.ok(!/\s…$/.test(out), "no dangling space before the ellipsis");
+  assert.equal(tidySubject("Short one"), "Short one", "short subjects are untouched");
+  assert.equal(tidySubject(null), "(no subject)");
+  assert.equal(tidySubject("  spaced   out  "), "spaced out", "whitespace collapsed");
+});
+
+test("REGRESSION: one noisy sender can't take every NEEDS YOU slot", () => {
+  // All three slots on 2026-08-01 were near-identical Canvas notifications.
+  const canvas = (n) =>
+    mail({ id: `c${n}`, sender: "UBC Canvas <no-reply@instructure.com>", subject: `Notification ${n}`, score: 70,
+      signals: ["VIP sender"] });
+  const l = composeLetter({
+    ...FULL,
+    inflow: [canvas(1), canvas(2), canvas(3), canvas(4),
+      mail({ id: "real", sender: "Beate <b@x.com>", subject: "Signature needed", score: 65, signals: ["VIP sender", "direct to me"] })],
+  });
+  const shown = l.text.slice(l.text.indexOf("NEEDS YOU"), l.text.indexOf("YOUR DAY"));
+  assert.equal((shown.match(/UBC Canvas/g) || []).length, 2, "capped at 2 per sender");
+  assert.ok(shown.includes("Beate"), "a different sender still gets through");
+});
+
+test("capPerSender preserves rank order", () => {
+  const r = (id, who, score) => mail({ id, sender: who, subject: id, score, signals: [] });
+  const out = capPerSender([r("a", "X <x@x.com>", 90), r("b", "X <x@x.com>", 80), r("c", "X <x@x.com>", 70), r("d", "Y <y@y.com>", 60)], 2);
+  assert.deepEqual(out.map((x) => x.id), ["a", "b", "d"]);
+});
