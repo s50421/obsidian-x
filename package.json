@@ -14,7 +14,7 @@
     "test:v41": "node --experimental-strip-types --no-warnings scripts/test-rank-mail.mjs && node --experimental-strip-types --no-warnings scripts/test-oauth-state.mjs",
     "test:v42": "node --experimental-strip-types --no-warnings scripts/test-letter.mjs && node --experimental-strip-types --no-warnings scripts/test-brief-window.mjs && node --experimental-strip-types --no-warnings scripts/test-conversation.mjs",
     "letter:sample": "node --experimental-strip-types --no-warnings scripts/test-letter.mjs --sample",
-    "test:sec": "node --experimental-strip-types --no-warnings scripts/test-secure-compare.mjs"
+    "test:sec": "node --experimental-strip-types --no-warnings scripts/test-secure-compare.mjs && node --experimental-strip-types --no-warnings scripts/test-redact.mjs"
   },
   "dependencies": {
     "@octokit/rest": "^22.0.1",

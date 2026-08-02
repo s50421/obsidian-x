@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { redactCodes } from "@/lib/redact";
 
 // Obsidian-X v4.2.1 — short-term conversational memory for the Telegram bot.
 //
@@ -45,7 +46,10 @@ export async function recordTurn(
   text: string,
   meta: Record<string, unknown> = {}
 ): Promise<void> {
-  const trimmed = (text ?? "").trim();
+  // Redact before STORING, not just before sending. A code kept here would be
+  // replayed into the intent model as context on the next message — quietly
+  // undoing the send-side guard.
+  const trimmed = redactCodes((text ?? "").trim()).text;
   if (!trimmed) return;
   try {
     await admin.from("conversation").insert({

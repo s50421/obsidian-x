@@ -506,10 +506,24 @@ async function rejectProposal(
   proposalId: string,
   cb: TgCallback
 ): Promise<void> {
+  // Name what was rejected. "Rejected — not added to ClickUp." on its own left
+  // the owner scrolling back to work out which proposal they'd just declined.
+  const { data: proposal } = await admin
+    .from("proposals")
+    .select("title")
+    .eq("id", proposalId)
+    .eq("user_id", userId)
+    .maybeSingle();
+  const what = (proposal?.title as string | undefined)?.trim();
+
   await rejectProposalById(admin, userId, proposalId);
-  await answerCallbackQuery(cb.id, "Rejected");
+  await answerCallbackQuery(cb.id, what ? `Rejected: ${what.slice(0, 40)}` : "Rejected");
   if (cb.message) {
-    await editMessageText(cb.message.chat.id, cb.message.message_id, "✖ Rejected — not added to ClickUp.");
+    await editMessageText(
+      cb.message.chat.id,
+      cb.message.message_id,
+      what ? `✖ Not added to ClickUp: ${what}` : "✖ Rejected — not added to ClickUp."
+    );
   }
 }
 

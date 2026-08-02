@@ -1,3 +1,5 @@
+import { redactCodes } from "@/lib/redact";
+
 // Telegram Bot API helpers. Outbound push (v1.4) + the two-way channel (v1.5).
 // Everything is a no-op until TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID are set.
 
@@ -95,9 +97,20 @@ export async function sendMessage(
   const chatId = opts.chat_id ?? process.env.TELEGRAM_CHAT_ID;
   if (!chatId) return null;
   const markdown = (opts.parse_mode ?? "Markdown") === "Markdown";
+
+  // v4.3 — one-time codes are stripped HERE, at the single point everything
+  // outbound passes through, so no future feature can leak one by forgetting.
+  // Owner directive after a digest echoed a live Crypto.com code into the chat,
+  // where it lived in scroll history and notification previews.
+  const { text: safe, redacted } = redactCodes(text);
+  if (redacted) {
+    // Log that it happened, never what it was.
+    console.warn("[telegram] redacted a one-time code from an outbound message");
+  }
+
   return api<{ message_id: number }>("sendMessage", {
     chat_id: chatId,
-    text,
+    text: safe,
     ...(markdown ? { parse_mode: "Markdown" } : {}),
     disable_web_page_preview: true,
     ...(opts.reply_markup ? { reply_markup: opts.reply_markup } : {}),

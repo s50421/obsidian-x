@@ -76,6 +76,48 @@ const MAX_ACTIONS = 8;
 /** How many messages one sender may contribute to NEEDS YOU. */
 const MAX_PER_SENDER = 2;
 
+/**
+ * Collapse near-identical messages.
+ *
+ * On 2026-07-31 the same f-bb.de acknowledgement appeared twice in WORTH
+ * KNOWING with the same sender and subject, and Canvas sends batches whose
+ * subjects differ only by a trailing course-code repeat. Matching on the exact
+ * string misses all of that, so the key is normalised: reply/forward prefixes
+ * stripped, punctuation and case flattened, and only the first ~50 characters
+ * compared — which is what makes "same thing, again" collapse.
+ *
+ * The highest-ranked copy survives; `dupes` counts what it stands for so the
+ * line can say "(x3)" rather than silently hiding mail.
+ */
+export function dedupeInflow(rows: InflowRow[]): (InflowRow & { dupes: number })[] {
+  const byKey = new Map<string, InflowRow & { dupes: number }>();
+  const order: string[] = [];
+
+  for (const r of rows) {
+    const subject = (r.subject ?? "")
+      .replace(/^\s*((re|fwd?|aw|wg)\s*:\s*)+/gi, "") // Re:/Fwd:/AW:/WG: chains
+      .toLowerCase()
+      .replace(/[^a-z0-9 ]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 50);
+    const key = `${senderName(r.sender).toLowerCase()}|${subject}`;
+
+    const seen = byKey.get(key);
+    if (seen) {
+      seen.dupes += 1;
+      // Keep the best-scoring copy's own fields.
+      if ((r.ranked_score ?? 0) > (seen.ranked_score ?? 0)) {
+        byKey.set(key, { ...r, dupes: seen.dupes });
+      }
+      continue;
+    }
+    byKey.set(key, { ...r, dupes: 1 });
+    order.push(key);
+  }
+  return order.map((k) => byKey.get(k)!);
+}
+
 /** Keep the top `n` per sender, preserving overall rank order. */
 export function capPerSender(rows: InflowRow[], n: number): InflowRow[] {
   const seen = new Map<string, number>();
@@ -139,10 +181,17 @@ export function tidySubject(subject: string | null): string {
   return `${(lastSpace > 40 ? cut.slice(0, lastSpace) : cut).trim()}…`;
 }
 
-function sectionNeedsYou(rows: InflowRow[]): string {
+function dupeSuffix(r: InflowRow & { dupes?: number }): string {
+  return (r.dupes ?? 1) > 1 ? ` (x${r.dupes})` : "";
+}
+
+function sectionNeedsYou(rows: (InflowRow & { dupes?: number })[]): string {
   if (!rows.length) return "Nothing needs you.";
   return rows
-    .map((r) => `• ${senderName(r.sender)} — ${tidySubject(r.subject)}\n   → ${suggestedAction(r)}`)
+    .map(
+      (r) =>
+        `• ${senderName(r.sender)} — ${tidySubject(r.subject)}${dupeSuffix(r)}\n   → ${suggestedAction(r)}`
+    )
     .join("\n");
 }
 
@@ -206,9 +255,11 @@ function sectionActions(items: ActionItem[]): string {
     .join("\n");
 }
 
-function sectionWorthKnowing(rows: InflowRow[]): string {
+function sectionWorthKnowing(rows: (InflowRow & { dupes?: number })[]): string {
   if (!rows.length) return "Nothing else of note.";
-  return rows.map((r) => `• ${senderName(r.sender)} — ${tidySubject(r.subject)}`).join("\n");
+  return rows
+    .map((r) => `• ${senderName(r.sender)} — ${tidySubject(r.subject)}${dupeSuffix(r)}`)
+    .join("\n");
 }
 
 /**
@@ -282,8 +333,10 @@ export function composeLetter(input: ComposeInput): Letter {
   // Only confident, high-scoring mail can demand attention. A low-confidence
   // read is withheld entirely (it goes to /ops for tuning) — the no-half-baked
   // law: a half-right "needs you" line is worse than no line.
-  const confident = inflow.filter(
-    (r) => Number(r.ranked_reason?.confidence ?? 0) >= MIN_CONFIDENCE
+  // Dedupe FIRST, so a repeated message can't consume a slot in either section
+  // and can't be counted twice.
+  const confident = dedupeInflow(
+    inflow.filter((r) => Number(r.ranked_reason?.confidence ?? 0) >= MIN_CONFIDENCE)
   );
   // One noisy sender must not eat the whole section. On 2026-08-01 all three
   // NEEDS YOU slots were near-identical Canvas notifications, which is what a

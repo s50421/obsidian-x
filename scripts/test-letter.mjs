@@ -351,3 +351,53 @@ test("capPerSender preserves rank order", () => {
   const out = capPerSender([r("a", "X <x@x.com>", 90), r("b", "X <x@x.com>", 80), r("c", "X <x@x.com>", 70), r("d", "Y <y@y.com>", 60)], 2);
   assert.deepEqual(out.map((x) => x.id), ["a", "b", "d"]);
 });
+
+// --- dedupe (owner: "dedupe needs to be better") ------------------------------
+
+const { dedupeInflow } = await import("../lib/letter.ts");
+
+test("REGRESSION: the same sender+subject twice collapses to one", () => {
+  // 2026-07-31 WORTH KNOWING listed the identical f-bb.de acknowledgement twice.
+  const dup = (id) =>
+    mail({ id, sender: "anerkennungszuschuss@f-bb.de",
+      subject: "Eingangsbestätigung Antrag auf Anerkennungszuschuss", score: 40, signals: [] });
+  const out = dedupeInflow([dup("a"), dup("b")]);
+  assert.equal(out.length, 1);
+  assert.equal(out[0].dupes, 2, "and it remembers how many it stands for");
+});
+
+test("reply and forward prefixes don't defeat dedupe", () => {
+  const v = (id, subject) => mail({ id, sender: "Beate <b@x.com>", subject, score: 50, signals: [] });
+  const out = dedupeInflow([
+    v("a", "Court strategy documents"),
+    v("b", "Re: Court strategy documents"),
+    v("c", "WG: Court strategy documents"),
+    v("d", "FWD: court strategy DOCUMENTS!!"),
+  ]);
+  assert.equal(out.length, 1, "all four are the same thread");
+  assert.equal(out[0].dupes, 4);
+});
+
+test("dedupe keeps the highest-scored copy and the original order", () => {
+  const v = (id, subject, score) => mail({ id, sender: "X <x@x.com>", subject, score, signals: [] });
+  const out = dedupeInflow([v("low", "Same thing", 30), v("high", "Same thing", 90), v("other", "Different", 50)]);
+  assert.equal(out.length, 2);
+  assert.equal(out[0].id, "high", "the better copy survives");
+  assert.equal(out[0].ranked_score, 90);
+  assert.equal(out[1].id, "other", "order is preserved");
+});
+
+test("genuinely different mail from one sender is NOT collapsed", () => {
+  const v = (id, subject) => mail({ id, sender: "Beate <b@x.com>", subject, score: 60, signals: [] });
+  const out = dedupeInflow([v("a", "Signature needed by Friday"), v("b", "Holiday photos from Lisbon")]);
+  assert.equal(out.length, 2, "different subjects must both survive");
+});
+
+test("the letter shows a multiplier instead of hiding repeats", () => {
+  const dup = (id) =>
+    mail({ id, sender: "Canvas <no-reply@instructure.com>", subject: "Assignment graded",
+      score: 70, signals: ["VIP sender"] });
+  const t = composeLetter({ ...FULL, inflow: [dup("a"), dup("b"), dup("c")] }).text;
+  assert.ok(t.includes("(x3)"), "the owner can see it happened three times");
+  assert.equal((t.match(/Assignment graded/g) || []).length, 1, "but only one line");
+});
