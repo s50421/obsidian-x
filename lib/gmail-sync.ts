@@ -27,6 +27,7 @@ import {
   readMailContent,
   resolveStream,
   scoreMail,
+  loadKnownSenders,
   MIN_CONFIDENCE,
   SURFACE_THRESHOLD,
   type Ranked,
@@ -120,13 +121,14 @@ async function ingestMessage(
   /** The logical inflow stream this message belongs to (see resolveStream) —
    *  the personal address for forwarded mail, else the mailbox itself. */
   stream: string,
-  todayISO: string
+  todayISO: string,
+  knownSenders: Set<string>
 ): Promise<{ ranked: Ranked; inflowId: string | null }> {
 
   // Thread state ("do I owe a reply?") only matters for non-bulk mail that is
   // part of a conversation — skip the extra API call otherwise.
   let othersLast: boolean | undefined;
-  const pre = deterministicSignals(msg, identities, vip, demote);
+  const pre = deterministicSignals(msg, identities, vip, demote, undefined, knownSenders);
   if (!pre.bulk && !pre.promotionsLabel && pre.threadReply) {
     try {
       othersLast = othersSpokeLast(await getThreadMeta(token, msg.threadId), identities);
@@ -135,7 +137,7 @@ async function ingestMessage(
     }
   }
 
-  const signals = deterministicSignals(msg, identities, vip, demote, othersLast);
+  const signals = deterministicSignals(msg, identities, vip, demote, othersLast, knownSenders);
   const content = canSkipContentPass(signals)
     ? {
         importance: 0.1,
@@ -321,6 +323,10 @@ export async function syncMailbox(
       ? await listLabels(token).catch(() => new Map<string, string>())
       : new Map<string, string>();
     const todayISO = new Date().toISOString().slice(0, 10);
+    // Loaded ONCE per sync, not per message: it is one query, and the set is
+    // stable across a batch. Built before this batch is written, so a message
+    // can never count itself as its own precedent.
+    const knownSenders = await loadKnownSenders(admin, userId);
 
     const metas = (
       await mapLimit(fresh, FETCH_CONCURRENCY, async (id) => {
@@ -344,7 +350,8 @@ export async function syncMailbox(
         demote,
         identities,
         stream,
-        todayISO
+        todayISO,
+        knownSenders
       );
       base.inserted += 1;
       base.streams[stream] = (base.streams[stream] ?? 0) + 1;

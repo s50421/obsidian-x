@@ -5,6 +5,7 @@ import { writeVaultNote, vaultUrl } from "@/lib/vault";
 import { logAudit } from "@/lib/audit";
 import { logLlmUsage } from "@/lib/usage";
 import { detectSensitive } from "@/lib/sensitivity";
+import { redactCodes } from "@/lib/redact";
 import { reprojectItemToVault } from "@/lib/vault-sync";
 import { cleanTitle, CONFIDENCE_BAR, scoreJunk } from "@/lib/title-standard.mjs";
 
@@ -244,7 +245,15 @@ export async function captureText(
   directive = ""
 ): Promise<CaptureOutcome> {
   const admin = createAdminClient();
-  const { sensitive, text: cleanText } = detectSensitive(text);
+  // One-time codes are stripped BEFORE anything else touches the text, so no
+  // downstream stage — model, embedding, vault file, `raw` column — ever holds
+  // a live credential (owner decision 2026-08-02). Redaction at the Telegram
+  // send path already stopped codes being echoed; this is the other half, and
+  // it is what makes "Ask can quote a code back at you" impossible rather than
+  // merely unlikely. The redactor is keyword-anchored, so control numbers,
+  // invoice references and amounts pass through untouched.
+  const { text: safeText } = redactCodes(text);
+  const { sensitive, text: cleanText } = detectSensitive(safeText);
   const today = new Date().toISOString().slice(0, 10);
 
   let enriched: EnrichedItem[];
@@ -289,7 +298,10 @@ export async function captureText(
     created.push(
       await storeEnrichedItem(admin, userId, it, {
         source,
-        rawText: text,
+        // The redacted text, not the original — `raw` is stored verbatim on the
+        // item, so passing `text` here would have re-introduced the code the
+        // line above just removed.
+        rawText: safeText,
         sensitive,
         confidence,
         split,

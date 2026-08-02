@@ -29,6 +29,9 @@ const {
   isVipSender,
   resolveStream,
   SURFACE_THRESHOLD,
+  MENTION_THRESHOLD,
+  nameVariants,
+  meetsContentBar,
 } = await import("../lib/rank-mail.ts");
 
 const ME = "davi.manhart@gmail.com";
@@ -258,6 +261,16 @@ const CLASS_NOTIFICATION = msg({
 });
 
 test("EXIT TEST: a named VIP always surfaces, even when the mail is bulk", () => {
+  // REVISED 2026-08-02, after the first week of real mail. This test used to
+  // demand `score >= SURFACE_THRESHOLD` — a hard floor into NEEDS YOU — which
+  // is what put three "no action required" Canvas notices into the decision
+  // queue on 2026-08-01 while a real shareholder-vote deadline sat below it.
+  //
+  // "Always surface" is now read as a promise about VISIBILITY, honoured by the
+  // letter as a whole: this message is guaranteed a WORTH KNOWING line. What it
+  // is NOT is a claim that every graded-assignment notice is a decision to
+  // make. The subject here carries no deadline, question or money signal — see
+  // the next test for the same sender when it does.
   const vipRules = { addresses: [], domains: ["instructure.com"], names: [] };
   const s = deterministicSignals(CLASS_NOTIFICATION, ME, vipRules, DEMOTE);
 
@@ -266,8 +279,8 @@ test("EXIT TEST: a named VIP always surfaces, even when the mail is bulk", () =>
 
   const r = scoreMail(s, read({ importance: 0.2, confidence: 0.9 }));
   assert.ok(
-    r.score >= SURFACE_THRESHOLD,
-    `a named VIP must clear the threshold despite being bulk (got ${r.score})`
+    r.score >= MENTION_THRESHOLD,
+    `a named VIP must never fall out of the letter entirely (got ${r.score})`
   );
   assert.equal(r.autoCreate, false, "surfacing is not the same as becoming a memory");
 });
@@ -453,4 +466,168 @@ test("othersSpokeLast recognises every one of my addresses as me", () => {
     false,
     "with only the work address known, my own reply is invisible"
   );
+});
+
+// ---------------------------------------------------------------------------
+// v4.2.3 — regressions from the first week of REAL mail (2026-07-30..08-02).
+//
+// Every bug below survived a green test suite, because every fixture had been
+// written from the design rather than from a mailbox. These are the actual
+// messages, with the actual senders, that exposed them.
+// ---------------------------------------------------------------------------
+
+
+
+// The owner's VIP list says "canvas" + instructure.com.
+const REAL_VIP = { addresses: [], domains: ["instructure.com", "v-bank.com"], names: ["beate manhart", "v-bank", "canvas"] };
+
+test("a VIP's no-action notification surfaces, but NOT into the decision queue", () => {
+  // Real message, 2026-08-01. The ranker's own reason was "Automated grade
+  // notification for past-due assignment; no action required" at confidence
+  // 0.95 — and it was floored to exactly 55, into NEEDS YOU.
+  const m = msg({
+    From: "MGMT_O 599A COMM_O 399A 101 2026SS AI for Business <notifications@instructure.com>",
+    To: ME,
+    Subject: "Assignment Graded: Assignment #1 - Canvas Profile (Due July 11@11:59)",
+    "List-Unsubscribe": "<mailto:unsub@instructure.com>",
+    "Auto-Submitted": "auto-generated",
+  });
+  const s = deterministicSignals(m, ME, REAL_VIP, DEMOTE);
+  assert.equal(s.vip, true, "instructure.com is a named VIP domain");
+  const r = scoreMail(s, read({ importance: 0.1, confidence: 0.95 }));
+  assert.ok(r.score >= MENTION_THRESHOLD, "'always surface' still honoured — it appears in the letter");
+  assert.ok(r.score < SURFACE_THRESHOLD, `a "no action required" notice must not be a NEEDS YOU line (got ${r.score})`);
+});
+
+test("the SAME VIP sender WITH an action still reaches the decision queue", () => {
+  const m = msg({
+    From: "UBC Canvas <notifications@instructure.com>",
+    To: ME,
+    Subject: "Assignment #3 due Friday 11:59pm",
+    "List-Unsubscribe": "<mailto:unsub@instructure.com>",
+  });
+  const s = deterministicSignals(m, ME, REAL_VIP, DEMOTE);
+  const r = scoreMail(s, read({ importance: 0.4, deadline: true, confidence: 0.9 }));
+  assert.ok(r.score >= SURFACE_THRESHOLD, "a real deadline from a VIP is a decision, whatever the cap says");
+});
+
+test("an action-bearing message surfaces WITHOUT being on any VIP list", () => {
+  // Real message, 2026-07-31. The ranker said "requires owner action by Sept
+  // 14" at confidence 0.85 — and scored 53, missing the letter by two points,
+  // while three Canvas notices sat above it.
+  const m = msg({
+    From: "Interactive Brokers <InteractiveBrokers@proxydocs.com>",
+    To: ME,
+    Subject: "Annual Meeting Notice: Nano Nuclear Energy Inc.     (515881901124)",
+  });
+  const s = deterministicSignals(m, ME, REAL_VIP, DEMOTE);
+  assert.equal(s.vip, false, "nobody named this sender");
+  assert.equal(s.transientCode, false, "a proxy CONTROL NUMBER is not a one-time code");
+  const r = scoreMail(s, read({ importance: 0.72, deadline: true, confidence: 0.85 }));
+  assert.ok(r.score >= SURFACE_THRESHOLD, `content alone must be able to surface mail (got ${r.score})`);
+});
+
+test("a one-time code is floored and can never become a memory", () => {
+  // Real message, 2026-08-01: scored 71 — second highest of the week — and
+  // auto-created a permanent item holding a live credential.
+  const m = msg({
+    From: '"Crypto.com" <hello@crypto.com>',
+    To: ME,
+    Subject: "Crypto.com code: 763264",
+    },
+    { snippet: "Your code is 763264. It expires in 10 minutes." }
+  );
+  const s = deterministicSignals(m, ME, REAL_VIP, DEMOTE);
+  assert.equal(s.transientCode, true);
+  const c = read({ importance: 0.9, deadline: true, money: true, confidence: 0.9 });
+  const r = scoreMail(s, c);
+  assert.ok(r.score <= 10, `a code is dead by 06:45 (got ${r.score})`);
+  assert.equal(meetsAutoCreateBar(s, c), false, "a live credential must never be stored as an item");
+  assert.equal(canSkipContentPass(s), true, "and must not be sent to a model either");
+});
+
+test("a marketing footer's anti-phishing code does not suppress the sender", () => {
+  // The trap: Crypto.com stamps "Anti-phishing Code: 81925" into EVERY email.
+  // Judging on the body would have capped a genuine security alert at 10.
+  const alert = msg(
+    { From: '"Crypto.com" <hello@crypto.com>', To: ME, Subject: "[NOTICE] You Added a Passkey" },
+    { snippet: "A passkey was added. Anti-phishing Code: 81925. If this wasn't you, lock your account." }
+  );
+  const s = deterministicSignals(alert, ME, REAL_VIP, DEMOTE);
+  assert.equal(s.transientCode, false, "the subject says what the message IS about; the footer does not");
+  const r = scoreMail(s, read({ importance: 0.72, money: true, confidence: 0.75 }));
+  assert.ok(r.score >= SURFACE_THRESHOLD, "an unexpected passkey on a crypto account is worth waking up to");
+});
+
+test("VIP name matching survives 'Last, First' display names", () => {
+  // V-Bank's Exchange server sends the owner's mother as "Manhart, Beate",
+  // so the list entry "beate manhart" never matched and the single most
+  // important correspondent in the corpus ranked as a stranger.
+  assert.deepEqual(nameVariants("Manhart, Beate"), ["manhart, beate", "beate manhart"]);
+  assert.equal(
+    isVipSender({ name: "Manhart, Beate", email: "Beate.Manhart@v-bank.com" }, REAL_VIP),
+    true
+  );
+});
+
+test("meetsContentBar and meetsAutoCreateBar stay in step", () => {
+  const m = msg({ From: "Stranger <s@x.com>", To: "someone@else.com", Subject: "Invoice due Friday" });
+  const s = deterministicSignals(m, ME, REAL_VIP, DEMOTE);
+  const c = read({ importance: 0.8, deadline: true, money: true, confidence: 0.8 });
+  assert.equal(meetsContentBar(s, c), true, "content is actionable…");
+  assert.equal(meetsAutoCreateBar(s, c), false, "…but it wasn't addressed to me, so it must not self-file");
+});
+
+test("a known correspondent outranks a stranger, but cannot climb on familiarity alone", () => {
+  const known = new Set(["annashew.edu@gmail.com"]);
+  const m = msg({ From: "Anna Shewchenko <annashew.edu@gmail.com>", To: ME, Subject: "Lost my phone" });
+
+  const stranger = scoreMail(
+    deterministicSignals(m, ME, REAL_VIP, DEMOTE, false, new Set()),
+    read({ importance: 0.16, question: true, confidence: 0.6 })
+  );
+  const familiar = scoreMail(
+    deterministicSignals(m, ME, REAL_VIP, DEMOTE, false, known),
+    read({ importance: 0.16, question: true, confidence: 0.6 })
+  );
+  assert.ok(familiar.score > stranger.score, "knowing the sender must count for something");
+  assert.ok(familiar.signals.includes("known correspondent"));
+
+  // The guard: the lift alone must never manufacture a NEEDS YOU line.
+  const dull = scoreMail(
+    deterministicSignals(
+      msg({ From: "Anna Shewchenko <annashew.edu@gmail.com>", To: ME, Subject: "hi" }),
+      ME, REAL_VIP, DEMOTE, false, known
+    ),
+    read({ importance: 0.1, confidence: 0.9 })
+  );
+  assert.ok(dull.score < SURFACE_THRESHOLD, `familiarity is not urgency (got ${dull.score})`);
+});
+
+test("a bulk sender never becomes a 'known correspondent' by repetition", () => {
+  const known = new Set(["news@shop.example"]);
+  const s = deterministicSignals(NEWSLETTER, ME, REAL_VIP, DEMOTE, false, known);
+  const r = scoreMail(s, read({ importance: 1, deadline: true, confidence: 1 }));
+  assert.ok(!r.signals.includes("known correspondent"), "machines write more often than people do");
+  assert.ok(r.score < SURFACE_THRESHOLD);
+});
+
+test("no-reply detection handles underscore separators", () => {
+  // Apple sends receipts from no_reply@email.apple.com. `no-?reply` missed it,
+  // so those receipts scored as ordinary personal mail.
+  for (const addr of [
+    "no_reply@email.apple.com",
+    "noreply@x.com",
+    "no-reply@x.com",
+    "do_not_reply@x.com",
+  ]) {
+    const s = deterministicSignals(msg({ From: addr, To: ME, Subject: "Your receipt" }), ME, REAL_VIP, DEMOTE);
+    assert.equal(s.bulk, true, `${addr} must read as bulk`);
+  }
+  // …without swallowing a real person whose name merely contains the letters.
+  const human = deterministicSignals(
+    msg({ From: "Noreen Reyes <noreen@clinic.example>", To: ME, Subject: "Appointment" }),
+    ME, REAL_VIP, DEMOTE
+  );
+  assert.equal(human.bulk, false);
 });

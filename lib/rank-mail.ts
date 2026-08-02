@@ -2,6 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { chat, extractJson, type Usage } from "@/lib/openrouter";
 import { getSettingValue, setSettingValue } from "@/lib/tz";
 import { parseAddresses, type GmailMessageMeta } from "@/lib/gmail";
+import { isCodeDelivery } from "@/lib/redact";
 
 // Obsidian-X v4.1 — importance ranking for inbound mail.
 //
@@ -187,13 +188,62 @@ export type Signals = {
   threadReply: boolean; // part of an existing conversation
   awaitingMyReply: boolean; // someone else spoke last in a thread I'm in
   promotionsLabel: boolean;
+  /**
+   * A one-time code / 2FA message. Deliberately its own signal rather than a
+   * demotion rule, because it is the one class of mail whose importance
+   * COLLAPSES WITH TIME: a code that mattered enormously at 20:37 is dead by
+   * the 06:45 letter. On 2026-08-01 a Crypto.com code scored 71 — the second
+   * highest of the week — and auto-created a permanent brain item holding a
+   * live credential.
+   */
+  transientCode: boolean;
+  /**
+   * Have we seen non-bulk mail from this address before?
+   *
+   * Added 2026-08-02 after the first week of real mail showed the ranker had no
+   * way to tell a person from a stranger. A real correspondent wrote asking a
+   * direct question and scored 34 — the model doubted the message and rated
+   * importance 0.16 — while three automated course notifications outranked her.
+   * Nothing in the score said "this is someone you actually know."
+   *
+   * Needs history, so it can't be derived from the message alone: the caller
+   * passes it in, exactly like `threadOthersLast`.
+   */
+  knownCorrespondent: boolean;
 };
 
-const NOREPLY = /(^|[._-])(no-?reply|do-?not-?reply|notifications?|mailer|bounce|postmaster)([._-]|@)/i;
+// Underscore is a separator too. `no_reply@email.apple.com` — Apple's actual
+// receipt sender — slipped through `no-?reply` and was ranked as ordinary
+// personal mail, which is how routine purchase receipts kept scoring 34 and
+// landing in WORTH KNOWING. Found 2026-08-02 while auditing which senders the
+// correspondent boost had learned.
+const NOREPLY =
+  /(^|[._-])(no[-_]?reply|do[-_]?not[-_]?reply|notifications?|mailer|bounce|postmaster)([._-]|@)/i;
 
 function domainOf(email: string): string {
   const i = email.lastIndexOf("@");
   return i < 0 ? "" : email.slice(i + 1).toLowerCase();
+}
+
+/**
+ * Every way a display name might be written, so a name matcher doesn't depend
+ * on the sender's mail client.
+ *
+ * Found in real mail (2026-08-02): the owner's VIP list holds "beate manhart",
+ * but V-Bank's Exchange server sends her as "Manhart, Beate" — so the matcher
+ * never fired, and the single most important correspondent in the corpus was
+ * ranked as a stranger. She still scored 74 on content alone, which is exactly
+ * why the content rule is the safety net; but the sender rule was silently dead.
+ */
+export function nameVariants(name: string): string[] {
+  const n = (name ?? "").toLowerCase().replace(/\s+/g, " ").trim();
+  if (!n) return [];
+  const out = [n];
+  const parts = n.split(",");
+  if (parts.length === 2 && parts[0].trim() && parts[1].trim()) {
+    out.push(`${parts[1].trim()} ${parts[0].trim()}`); // "Last, First" → "first last"
+  }
+  return out;
 }
 
 export function isVipSender(from: { name: string; email: string } | null, vip: VipRules): boolean {
@@ -201,8 +251,8 @@ export function isVipSender(from: { name: string; email: string } | null, vip: V
   const email = from.email.toLowerCase();
   if (vip.addresses.includes(email)) return true;
   if (vip.domains.includes(domainOf(email))) return true;
-  const name = (from.name ?? "").toLowerCase();
-  return !!name && vip.names.some((n) => n && name.includes(n));
+  const variants = nameVariants(from.name ?? "");
+  return vip.names.some((n) => n && variants.some((v) => v.includes(n)));
 }
 
 export function deterministicSignals(
@@ -212,7 +262,9 @@ export function deterministicSignals(
   identities: string | string[],
   vip: VipRules,
   demote: DemoteRules,
-  threadOthersLast?: boolean
+  threadOthersLast?: boolean,
+  /** Addresses the owner has had non-bulk mail from before (see knownSenders). */
+  knownSenders?: Set<string>
 ): Signals {
   const h = msg.headers;
   const me = new Set(
@@ -260,7 +312,49 @@ export function deterministicSignals(
     awaitingMyReply: threadOthersLast === true,
     promotionsLabel:
       msg.labelIds.includes("CATEGORY_PROMOTIONS") || msg.labelIds.includes("CATEGORY_SOCIAL"),
+    // Subject only, via the redactor's own definition — see isCodeDelivery for
+    // why the body must not be consulted here. Anchored on words, never on a
+    // bare number: this same corpus carries a proxy-voting control number and
+    // invoice references that must NOT be treated as credentials.
+    transientCode: isCodeDelivery(h.subject ?? ""),
+    knownCorrespondent: !!fromEmail && knownSenders?.has(fromEmail) === true,
   };
+}
+
+/**
+ * Addresses the owner has had real (non-bulk) mail from before.
+ *
+ * Built from the arrival ledger rather than from a contacts API: what makes
+ * someone a correspondent here is that they have actually written, which is
+ * precisely what `inflow_events` records. Bulk senders are excluded, so a
+ * newsletter cannot earn the lift by sheer repetition — the whole point is to
+ * separate people from machines, and a machine writes far more often.
+ */
+export async function loadKnownSenders(
+  admin: SupabaseClient,
+  userId: string,
+  /** Don't count the message being ranked as its own precedent. */
+  before?: Date
+): Promise<Set<string>> {
+  let q = admin
+    .from("inflow_events")
+    .select("sender,ranked_reason")
+    .eq("user_id", userId)
+    .eq("source", "gmail")
+    .limit(2000);
+  if (before) q = q.lt("ts", before.toISOString());
+  const { data } = await q;
+
+  const out = new Set<string>();
+  for (const r of data ?? []) {
+    const signals: string[] = (r.ranked_reason as { signals?: string[] })?.signals ?? [];
+    if (signals.includes("bulk") || signals.includes("promotions") || signals.includes("automated")) {
+      continue;
+    }
+    const addr = parseAddresses((r.sender as string) ?? "")[0]?.email;
+    if (addr) out.add(addr.toLowerCase());
+  }
+  return out;
 }
 
 /**
@@ -384,30 +478,55 @@ export type Ranked = {
   usage: Usage | null;
 };
 
-/** Above this, mail is worth showing the owner in the brief. */
+/** Above this, mail belongs in NEEDS YOU — the letter's decision queue. */
 export const SURFACE_THRESHOLD = 55;
+/**
+ * Above this, mail is at least worth a WORTH KNOWING line. Below it, the letter
+ * never mentions the message at all. Lives here rather than in the letter
+ * because the ranker needs it: guaranteeing a named VIP a mention is how
+ * "always surface" survives the bulk cap.
+ */
+export const MENTION_THRESHOLD = 30;
 /** Below this, ranking confidence is too low to surface — goes to /ops instead. */
 export const MIN_CONFIDENCE = 0.5;
 
+/** Is there anything here the owner actually has to DO? */
+export function hasActionSignal(c: ContentRead): boolean {
+  return c.deadline || c.question || c.money;
+}
+
 /**
- * The auto-create bar, deliberately strict (owner decision 2026-07-29):
- * VIP sender AND direct-to-me AND a real deadline-or-question signal, with the
- * model confident. Auto-created items are routed into the evening swipe deck,
- * so a mis-fire costs one swipe rather than polluting the brain — that is what
- * keeps "auto-create" compatible with propose-then-approve.
+ * The CONTENT half of the owner's VIP definition, stated as a test:
+ * "VIP is any mail that contains an action item or requires a response that is
+ * not an advertisement or sale."
+ *
+ * Until 2026-08-02 only the SENDER half had a floor, and the asymmetry showed
+ * up the first week real mail flowed: a shareholder-vote notice the ranker
+ * itself described as "requires owner action by Sept 14" scored 53 and missed
+ * the letter by two points, while three Canvas notifications reading "no action
+ * required" were floored to exactly 55 and filled NEEDS YOU. Both halves of the
+ * owner's rule now carry a floor, so an action-bearing message surfaces on its
+ * own merits without needing a name on a list.
+ */
+export function meetsContentBar(s: Signals, c: ContentRead): boolean {
+  if (s.bulk || s.demoted || s.automated || s.promotionsLabel) return false;
+  if (s.transientCode) return false;
+  if (!hasActionSignal(c)) return false;
+  return c.importance >= 0.7 && c.confidence >= 0.7;
+}
+
+/**
+ * The auto-create bar, deliberately strict (owner decision 2026-07-29): the
+ * content bar above, PLUS direct-to-me. Auto-created items are routed into the
+ * evening swipe deck, so a mis-fire costs one swipe rather than polluting the
+ * brain — that is what keeps "auto-create" compatible with propose-then-approve.
+ *
+ * Surfacing and becoming a memory stay different decisions, and the second one
+ * is irreversible-ish: a VIP's Canvas notification appears in the letter but
+ * never becomes an item on its own.
  */
 export function meetsAutoCreateBar(s: Signals, c: ContentRead): boolean {
-  // Automated, bulk, promotional or explicitly demoted mail never becomes an
-  // item — not even from a VIP. A VIP's Canvas notification should SURFACE in
-  // the brief (see the floor in scoreMail), but surfacing and becoming a
-  // memory are different decisions, and the second one is irreversible-ish.
-  if (s.bulk || s.demoted || s.automated || s.promotionsLabel) return false;
-  if (!s.direct) return false;
-  // Owner's definition (2026-07-29): "VIP is any mail that contains an action
-  // item or requires a response that is not an advertisement or sale." So the
-  // gate is the ACTION, not the sender — a named VIP is no longer required.
-  if (!(c.deadline || c.question || c.money)) return false;
-  return c.importance >= 0.7 && c.confidence >= 0.7;
+  return meetsContentBar(s, c) && s.direct;
 }
 
 export function scoreMail(s: Signals, c: ContentRead): Ranked {
@@ -439,6 +558,14 @@ export function scoreMail(s: Signals, c: ContentRead): Ranked {
     score += 5;
     signals.push("thread reply");
   }
+  // Deliberately modest, and deliberately never applied to bulk mail: this is
+  // meant to break the tie between a person and a machine, not to let anyone
+  // who has ever emailed twice climb into the decision queue on familiarity
+  // alone. It cannot, by itself, carry a message over the surface threshold.
+  if (s.knownCorrespondent && !s.bulk && !s.promotionsLabel && !s.automated) {
+    score += 10;
+    signals.push("known correspondent");
+  }
   if (c.deadline) {
     score += 20;
     signals.push("deadline");
@@ -457,22 +584,33 @@ export function scoreMail(s: Signals, c: ContentRead): Ranked {
   // above a real message.
   //
   // An explicit demotion always wins — the owner said "never", and that beats
-  // every other signal including VIP.
-  if (s.demoted) {
+  // every other signal including VIP. A one-time code is demoted on the same
+  // line for a different reason: not that it never mattered, but that it cannot
+  // still matter by the time the letter is read.
+  if (s.demoted || s.transientCode) {
     score = Math.min(score, 10);
+    if (s.transientCode) signals.push("one-time code");
   } else {
-    // Bulk/automated caps apply only to senders the owner has NOT named. Naming
-    // a sender VIP is a deliberate statement that their mail matters even when
-    // it's machine-generated: Canvas/class notifications and bank alerts all
-    // carry List-Unsubscribe, and capping them would mean the owner's explicit
-    // "always surface these" silently never happened.
-    if (!s.vip) {
-      if (s.bulk || s.promotionsLabel) score = Math.min(score, 25);
-      if (s.automated) score = Math.min(score, 35);
+    // Caps now apply to VIPs too. They used to be skipped for named senders,
+    // because a cap would have buried mail the owner said must "always
+    // surface" — but that reasoning is obsolete now that surfacing is
+    // guaranteed by a FLOOR instead. Capping first and flooring second is
+    // strictly better: it preserves the guarantee while letting the ranker
+    // still say that an automated notification is an automated notification.
+    if (s.bulk || s.promotionsLabel) score = Math.min(score, 25);
+    if (s.automated) score = Math.min(score, 35);
+
+    // Route (a) — CONTENT. An action-bearing message the model is sure about
+    // reaches the decision queue on its own, with no name on any list.
+    if (meetsContentBar(s, c)) score = Math.max(score, SURFACE_THRESHOLD);
+
+    // Route (b) — SENDER. A named VIP always appears in the letter. Whether it
+    // appears in NEEDS YOU or in WORTH KNOWING depends on whether there is
+    // anything to do: "always surface" is a promise about visibility, not a
+    // claim that every graded-assignment notice is a decision to make.
+    if (s.vip) {
+      score = Math.max(score, hasActionSignal(c) ? SURFACE_THRESHOLD : MENTION_THRESHOLD);
     }
-    // "Should always surface" taken literally: a named VIP that hasn't been
-    // demoted is guaranteed to clear the threshold, whatever the model thought.
-    if (s.vip) score = Math.max(score, SURFACE_THRESHOLD);
   }
 
   score = Math.max(0, Math.min(100, score));
@@ -495,10 +633,13 @@ export function scoreMail(s: Signals, c: ContentRead): Ranked {
  * threshold given the caps above, so there is nothing to learn by classifying it.
  */
 export function canSkipContentPass(s: Signals): boolean {
+  // A one-time code is capped at 10 whatever it says, so reading it buys
+  // nothing — and it is the one message class worth NOT sending to a model.
+  if (s.transientCode) return true;
   // Never skip a named VIP, even a bulk one. Their mail is guaranteed to
   // surface, so the brief needs a real reason line for it — "bulk/automated,
-  // not classified" would be a useless thing to read at 6:30am. A demotion
-  // still short-circuits, since that mail is capped at 10 and never shown.
+  // not classified" would be a useless thing to read at 6:30am. The read also
+  // now decides WHICH section they land in (see the VIP floor in scoreMail).
   if (s.vip && !s.demoted) return false;
   return s.bulk || s.promotionsLabel || s.automated || s.demoted;
 }

@@ -63,3 +63,27 @@ export function redactCodes(text: string): { text: string; redacted: boolean } {
 export function containsCode(text: string): boolean {
   return redactCodes(text).redacted;
 }
+
+/**
+ * Is this message ABOUT delivering a one-time code?
+ *
+ * Deliberately narrower than `containsCode`, and the distinction is not
+ * academic: Crypto.com stamps "Anti-phishing Code: 81925" into the footer of
+ * every marketing email it sends. Treating "contains a code" as "is a code
+ * message" therefore capped an entire sender's mail — including, on the same
+ * day, a genuine "[NOTICE] You Added a Passkey" security alert that only
+ * escaped because the snippet happened to be truncated before the footer.
+ * Suppressing a security alert is a far worse failure than ranking a dead code
+ * too highly, so this reads the SUBJECT only: what a message is about is stated
+ * there, not in whatever boilerplate trails the body.
+ *
+ * Redaction is unaffected and stays maximally eager — an anti-phishing code
+ * should still never be echoed into Telegram.
+ */
+const CODE_SUBJECT = new RegExp(`\\b(?:${CODE_WORDS})\\b[\\s-]*\\b(?:code|pin|passcode)\\b|\\b(?:otp|2fa|mfa|passcode)\\b`, "i");
+
+export function isCodeDelivery(subject: string): boolean {
+  const s = subject ?? "";
+  if (!s.trim()) return false;
+  return CODE_SUBJECT.test(s) || containsCode(s);
+}

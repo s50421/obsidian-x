@@ -106,3 +106,28 @@ test("the widened gap still can't reach an unrelated number", () => {
   assert.ok(!out.includes("763264"), "the code goes");
   assert.ok(out.includes("515881901124"), "the control number stays");
 });
+
+// --- v4.2.3: "carries a code" vs "IS a code message" ------------------------
+const { isCodeDelivery } = await import("../lib/redact.ts");
+
+test("isCodeDelivery reads the subject, not the boilerplate", () => {
+  // Crypto.com stamps an anti-phishing code into EVERY email it sends, so
+  // "the body contains a code" would have capped a genuine security alert.
+  assert.equal(isCodeDelivery("Crypto.com code: 763264"), true);
+  assert.equal(isCodeDelivery("908088 - Your Spotify login code"), true);
+  assert.equal(isCodeDelivery("Your verification code"), true, "no digits needed — the subject says what it is");
+  assert.equal(isCodeDelivery("[NOTICE] You Added a Passkey"), false);
+  assert.equal(isCodeDelivery("Is the Smart Money on These AI Tokens?"), false);
+  assert.equal(
+    isCodeDelivery("Annual Meeting Notice: Nano Nuclear Energy Inc. (515881901124)"),
+    false,
+    "a proxy control number is not a credential"
+  );
+});
+
+test("redaction stays eager even where ranking does not", () => {
+  // The anti-phishing footer must still never reach Telegram.
+  const { text, redacted } = redactCodes("A passkey was added. Anti-phishing Code: 81925.");
+  assert.equal(redacted, true);
+  assert.ok(!text.includes("81925"));
+});

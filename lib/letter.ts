@@ -1,7 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { detectConflicts, type CalConflict, type CalEvent } from "@/lib/calendar";
 import { coverageFooter, type SourceStatusRow } from "@/lib/source-status";
-import { MIN_CONFIDENCE, SURFACE_THRESHOLD } from "@/lib/rank-mail";
+import { MENTION_THRESHOLD, MIN_CONFIDENCE, SURFACE_THRESHOLD } from "@/lib/rank-mail";
 import { localDateStr } from "@/lib/tz";
 import { localDayBoundsUtc } from "@/app/deck/day-window";
 import type { InlineButton, InlineKeyboard } from "@/lib/telegram";
@@ -64,12 +64,23 @@ export type InflowRow = {
   } | null;
   item_id: string | null;
   account: string | null;
+  /**
+   * Where the message ended up, when the system filed it itself.
+   *
+   * "board" is only claimed when a ClickUp reference actually exists on the
+   * item — an auto-created `reference` (a security alert, say) is filed in the
+   * brain and never reaches a kanban board, and saying otherwise would be a
+   * line the owner has to go and check. Populated by loadInflow; composeLetter
+   * stays pure.
+   */
+  filed?: "board" | "brain";
 };
 
 export type ActionItem = { id: string; title: string; due_at: string | null; overdue: boolean };
 
 /** Below this a message is "worth knowing" rather than "needs you". */
-const WORTH_KNOWING_FLOOR = 30;
+/** Shared with the ranker, which needs it to guarantee a VIP a mention. */
+const WORTH_KNOWING_FLOOR = MENTION_THRESHOLD;
 const MAX_NEEDS_YOU = 7;
 const MAX_WORTH_KNOWING = 3;
 const MAX_ACTIONS = 8;
@@ -101,7 +112,7 @@ export function dedupeInflow(rows: InflowRow[]): (InflowRow & { dupes: number })
       .replace(/\s+/g, " ")
       .trim()
       .slice(0, 50);
-    const key = `${senderName(r.sender).toLowerCase()}|${subject}`;
+    const key = `${senderKey(r.sender)}|${subject}`;
 
     const seen = byKey.get(key);
     if (seen) {
@@ -123,7 +134,7 @@ export function capPerSender(rows: InflowRow[], n: number): InflowRow[] {
   const seen = new Map<string, number>();
   const out: InflowRow[] = [];
   for (const r of rows) {
-    const key = senderName(r.sender).toLowerCase();
+    const key = senderKey(r.sender);
     const count = seen.get(key) ?? 0;
     if (count >= n) continue;
     seen.set(key, count + 1);
@@ -144,11 +155,47 @@ export function senderName(s: string | null): string {
 }
 
 /**
+ * Who this is really from, for grouping. The ADDRESS, not the display name.
+ *
+ * This distinction is the whole reason the per-sender cap failed on 2026-08-01.
+ * Canvas sends every course from notifications@instructure.com but rewrites the
+ * display name per course — "UBC Canvas", "MGMT_O 599A COMM_O 399A 101 2026SS
+ * AI for Business" — so a cap keyed on the display name saw three different
+ * senders and let all three into NEEDS YOU, which is precisely what the cap had
+ * been added to prevent the day before.
+ */
+export function senderKey(s: string | null): string {
+  const m = (s ?? "").match(/<([^>]+)>/);
+  if (m?.[1]) return m[1].trim().toLowerCase();
+  const bare = (s ?? "").trim();
+  if (/^[^\s@]+@[^\s@]+$/.test(bare)) return bare.toLowerCase();
+  return senderName(s).toLowerCase();
+}
+
+/**
  * One short imperative for what this message wants. Derived from the ranker's
  * own signals rather than another model call — the ranking already decided
  * this, and re-asking would risk the letter disagreeing with itself.
  */
 export function suggestedAction(r: InflowRow): string {
+  // Mail that already cleared the auto-create bar has been turned into a task.
+  // Saying so is the point: until 2026-08-02 that mail was EXCLUDED from the
+  // letter entirely (auto-create flips inflow state to 'actioned', and the
+  // letter only loaded 'new'/'surfaced'), so the messages that cleared the
+  // STRICTEST bar were the ones most likely to go unmentioned. A shareholder
+  // vote with a real September deadline was found, ranked, filed as a task —
+  // and never once appeared in a letter. That is the no-surprises rule failing
+  // at its most expensive point.
+  //
+  // The distinction is checked, not assumed: item_id means the message became
+  // an item in the brain, which is NOT the same claim as "it is on your board".
+  // Only task-type items carry a ClickUp reference, so the Crypto.com passkey
+  // alert — filed as a `reference` — would otherwise have been described as
+  // sitting on a kanban board it never reached. A letter that overstates by one
+  // word is a letter that has to be checked, which is the whole thing this
+  // product exists to avoid.
+  if (r.filed === "board") return "on the board";
+  if (r.item_id) return "already filed";
   const signals = new Set(r.ranked_reason?.signals ?? []);
   if (signals.has("awaiting my reply")) return "reply owed";
   if (signals.has("direct question")) return "answer";
@@ -347,14 +394,18 @@ export function composeLetter(input: ComposeInput): Letter {
     MAX_PER_SENDER
   ).slice(0, MAX_NEEDS_YOU);
   const needsYouIds = new Set(needsYou.map((r) => r.id));
-  const worthKnowing = confident
-    .filter(
+  // The same per-sender cap applies here. Demoting a noisy automated sender out
+  // of NEEDS YOU only moves the problem if it can then fill WORTH KNOWING
+  // instead — which is exactly what Canvas did once its VIP floor was relaxed.
+  const worthKnowing = capPerSender(
+    confident.filter(
       (r) =>
         !needsYouIds.has(r.id) &&
         (r.ranked_score ?? 0) >= WORTH_KNOWING_FLOOR &&
         (r.ranked_score ?? 0) < SURFACE_THRESHOLD
-    )
-    .slice(0, MAX_WORTH_KNOWING);
+    ),
+    MAX_PER_SENDER
+  ).slice(0, MAX_WORTH_KNOWING);
 
   const conflicts = detectConflicts(events);
   const shownActions = actions.slice(0, MAX_ACTIONS);
@@ -444,12 +495,37 @@ export async function loadInflow(
     .from("inflow_events")
     .select("id,subject,sender,snippet,ranked_score,ranked_reason,item_id,account")
     .eq("user_id", userId)
-    .in("state", ["new", "surfaced"])
+    // 'actioned' is included on purpose: it is the state auto-create sets, and
+    // that mail still has to be reported (see suggestedAction). What must NOT
+    // come back is mail the OWNER dealt with — that is 'dismissed', which is
+    // what the letter's "✓ Handled" button now writes.
+    .in("state", ["new", "surfaced", "actioned"])
     .gte("ts", since.toISOString())
     .gte("ranked_score", WORTH_KNOWING_FLOOR)
     .order("ranked_score", { ascending: false })
     .limit(40);
-  return (data ?? []) as InflowRow[];
+
+  const rows = (data ?? []) as InflowRow[];
+
+  // Resolve what actually happened to the mail the system filed itself. One
+  // query for the whole letter, not one per row.
+  const itemIds = rows.map((r) => r.item_id).filter((id): id is string => !!id);
+  if (itemIds.length) {
+    const { data: items } = await admin
+      .from("items")
+      .select("id,external")
+      .in("id", itemIds);
+    const onBoard = new Map<string, boolean>();
+    for (const it of items ?? []) {
+      const ext = (it.external ?? {}) as { clickup?: { id?: string } };
+      onBoard.set(it.id as string, !!ext.clickup?.id);
+    }
+    for (const r of rows) {
+      if (!r.item_id) continue;
+      r.filed = onBoard.get(r.item_id) ? "board" : "brain";
+    }
+  }
+  return rows;
 }
 
 /**

@@ -401,3 +401,64 @@ test("the letter shows a multiplier instead of hiding repeats", () => {
   assert.ok(t.includes("(x3)"), "the owner can see it happened three times");
   assert.equal((t.match(/Assignment graded/g) || []).length, 1, "but only one line");
 });
+
+// ---------------------------------------------------------------------------
+// v4.2.3 — what the first week of real letters got wrong.
+// ---------------------------------------------------------------------------
+
+const { senderKey } = await import("../lib/letter.ts");
+
+const row = (id, who, score, extra = {}) =>
+  ({ ...mail({ id, sender: who, subject: id, score, signals: [] }), ...extra });
+
+test("senders are grouped by ADDRESS, not by display name", () => {
+  // Canvas rewrites its display name per course but sends everything from one
+  // address. Keyed on the display name, the per-sender cap saw three different
+  // senders — which is how all three NEEDS YOU slots went to Canvas on
+  // 2026-08-01, the morning AFTER the cap was added to prevent exactly that.
+  const CANVAS = "notifications@instructure.com";
+  const rows = [
+    row("a", `MGMT_O 599A COMM_O 399A 101 2026SS AI for Business <${CANVAS}>`, 55),
+    row("b", `MGMT_O 599A COMM_O 399A 101 2026SS AI for Business <${CANVAS}>`, 55),
+    row("c", `UBC Canvas <${CANVAS}>`, 55),
+    row("d", "Beate Manhart <beate@v-bank.com>", 74),
+  ];
+  assert.equal(senderKey(rows[0].sender), senderKey(rows[2].sender), "same mailbox, different label");
+  const out = capPerSender(rows, 2);
+  assert.equal(out.filter((x) => senderKey(x.sender) === CANVAS).length, 2, "cap must hold across display names");
+  assert.equal(out.length, 3);
+});
+
+test("senderKey falls back sanely when there is no angle-bracket address", () => {
+  assert.equal(senderKey("anerkennungszuschuss@f-bb.de"), "anerkennungszuschuss@f-bb.de");
+  assert.equal(senderKey("Some Name"), "some name");
+  assert.equal(senderKey(null), "unknown");
+});
+
+test("mail the system already filed says so, instead of vanishing", () => {
+  // Real failure, 2026-07-31: a shareholder-vote notice cleared the strict
+  // auto-create bar, became a task due Sept 14 — and was then excluded from
+  // every letter, because auto-create flips inflow state to 'actioned'. The
+  // mail that clears the HIGHEST bar was the mail most likely to go unmentioned.
+  const filed = {
+    ...row("ib", "Interactive Brokers <ib@proxydocs.com>", 55),
+    item_id: "11111111-1111-1111-1111-111111111111",
+  };
+  assert.equal(suggestedAction(filed), "already filed", "in the brain, but not on any board");
+  assert.equal(
+    suggestedAction({ ...filed, filed: "board" }),
+    "on the board",
+    "only claimed when the item really carries a ClickUp reference"
+  );
+
+  const letter = composeLetter({
+    tz: TZ,
+    now: NOW,
+    events: [],
+    statusRows: [],
+    inflow: [filed],
+    actions: [],
+  });
+  assert.match(letter.text, /NEEDS YOU \(1\)/);
+  assert.match(letter.text, /already filed/);
+});

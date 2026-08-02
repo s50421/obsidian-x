@@ -893,6 +893,12 @@ async function showMailDraft(
 
 // "✓ Handled" on a letter line: the owner has dealt with it, so it must not
 // come back tomorrow.
+//
+// Writes 'dismissed', not 'actioned'. The two used to be the same state, which
+// stopped being harmless once the letter began reporting auto-created mail:
+// 'actioned' is what the SYSTEM sets when it files a message as a task, and
+// that mail must still be shown. 'dismissed' is what the OWNER sets, and that
+// is the only one that means "never show me this again".
 async function markInflowHandled(
   admin: SupabaseClient,
   userId: string,
@@ -901,7 +907,7 @@ async function markInflowHandled(
 ): Promise<void> {
   const { data } = await admin
     .from("inflow_events")
-    .update({ state: "actioned" })
+    .update({ state: "dismissed" })
     .eq("id", inflowId)
     .eq("user_id", userId)
     .select("subject")
