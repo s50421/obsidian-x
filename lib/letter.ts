@@ -5,6 +5,8 @@ import { MIN_CONFIDENCE, SURFACE_THRESHOLD } from "@/lib/rank-mail";
 import { localDateStr } from "@/lib/tz";
 import { localDayBoundsUtc } from "@/app/deck/day-window";
 import type { InlineButton, InlineKeyboard } from "@/lib/telegram";
+import type { NewsDigest } from "@/lib/news";
+import type { Episode } from "@/lib/podcast";
 
 // Obsidian-X v4.2 — the daily letter.
 //
@@ -37,6 +39,14 @@ export type Letter = {
   coverage: string;
   /** Inflow rows surfaced this morning — the caller marks them `surfaced`. */
   surfacedInflowIds: string[];
+};
+
+/** The world outside the owner's own inbox. Optional — the letter works without it. */
+export type Briefing = {
+  digest: NewsDigest | null;
+  episode: Episode | null;
+  /** Set when the news fetch failed, so the section can say so honestly. */
+  error?: string | null;
 };
 
 export type InflowRow = {
@@ -174,6 +184,40 @@ function sectionWorthKnowing(rows: InflowRow[]): string {
   return rows.map((r) => `• ${senderName(r.sender)} — ${(r.subject ?? "(no subject)").trim()}`).join("\n");
 }
 
+/**
+ * The world section. Deliberately last before the footer: it is the only part
+ * of the letter that asks nothing of the owner, so it must never push a
+ * decision below the fold.
+ *
+ * A failed fetch SAYS so rather than disappearing — an absent section and a
+ * broken one look identical otherwise, which is the same trap the coverage
+ * footer exists to avoid.
+ */
+function sectionBriefing(b: Briefing | undefined): string {
+  if (!b) return "";
+  const lines: string[] = [];
+
+  if (b.digest) {
+    if (b.digest.markets) lines.push(`Markets — ${b.digest.markets}`);
+    if (b.digest.geopolitics) lines.push(`World — ${b.digest.geopolitics}`);
+    if (b.digest.tech) lines.push(`Tech — ${b.digest.tech}`);
+    for (const s of b.digest.smalltalk) lines.push(`• ${s}`);
+    // Plain text, not Markdown — the letter is sent with parse_mode "plain"
+    // (dynamic content can't be trusted to be valid Markdown), so underscores
+    // would render literally.
+    if (b.digest.sources.length) lines.push(`via ${b.digest.sources.join(" · ")}`);
+  } else {
+    lines.push(`Couldn't fetch the news this morning${b.error ? ` (${b.error})` : ""}.`);
+  }
+
+  if (b.episode) {
+    const mins = b.episode.durationMin ? ` · ${b.episode.durationMin} min` : "";
+    lines.push(`🎧 Morning Brew Daily: ${b.episode.title}${mins}`);
+  }
+
+  return lines.join("\n");
+}
+
 // ---- assembly ------------------------------------------------------------------
 
 export type ComposeInput = {
@@ -187,6 +231,8 @@ export type ComposeInput = {
   prep?: Map<string, string>;
   /** Inflow ids that already have a draft waiting (button says "ready"). */
   draftedInflowIds?: Set<string>;
+  /** News + podcast. Omit entirely to leave the section out. */
+  briefing?: Briefing;
 };
 
 /**
@@ -246,6 +292,10 @@ export function composeLetter(input: ComposeInput): Letter {
   }
 
   parts.push("", `WORTH KNOWING (${worthKnowing.length})`, sectionWorthKnowing(worthKnowing));
+
+  const briefingText = sectionBriefing(input.briefing);
+  if (briefingText) parts.push("", "BRIEFING", briefingText);
+
   parts.push("", "— — —", `Coverage: ${coverageFooter(statusRows, now.getTime())}`);
 
   // ---- buttons: every decision is one tap ----
@@ -267,6 +317,10 @@ export function composeLetter(input: ComposeInput): Letter {
   for (const a of shownActions.slice(0, 6)) {
     rows.push([{ text: `✓ ${a.title.slice(0, 40)}`, callback_data: `done:${a.id}` }]);
   }
+
+  // The episode goes behind a button so the tracking URL never shows.
+  const audio = input.briefing?.episode?.audioUrl;
+  if (audio) rows.push([{ text: "🎧 Play Morning Brew", url: audio }]);
 
   // Scorecard instrumentation (workstream C) — one tap, every morning. This is
   // the only source for KPI #1 (brief accuracy) that isn't guesswork.

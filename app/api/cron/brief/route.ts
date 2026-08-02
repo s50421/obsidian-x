@@ -5,6 +5,7 @@ import { isCronAuthorized } from "@/lib/cron";
 import { checkTelegramHealth, sendMessage } from "@/lib/telegram";
 import { fetchUpcomingEventsWithStatus, type CalEvent } from "@/lib/calendar";
 import { logAudit } from "@/lib/audit";
+import { logLlmUsage } from "@/lib/usage";
 import { embedText } from "@/lib/embed";
 import {
   ensureDeclaredSources,
@@ -20,6 +21,8 @@ import {
 } from "@/lib/letter";
 import { pregenerateDrafts } from "@/lib/letter-drafts";
 import { projectActionItems } from "@/lib/task-projection";
+import { getDailyBriefing } from "@/lib/news";
+import { latestMorningBrew } from "@/lib/podcast";
 import {
   resolveOwnerTz,
   localHHMM,
@@ -194,12 +197,20 @@ export async function GET(req: Request) {
 
   // ---- the letter's contents --------------------------------------------------
   const since = new Date(now.getTime() - 24 * 3600 * 1000);
-  const [inflow, actions, statusRows, prep] = await Promise.all([
+  // The news fetch and the podcast feed run alongside everything else — both
+  // are best-effort and neither can fail the letter. `refresh=1` forces a new
+  // search; otherwise the digest is cached on the owner's local date so a
+  // preview costs nothing and reads exactly like what was delivered.
+  const refreshNews = params.get("refresh") === "1";
+  const [inflow, actions, statusRows, prep, news, episode] = await Promise.all([
     loadInflow(admin, owner.id, since),
     loadActionItems(admin, owner.id, tz, now),
     loadSourceStatus(admin, owner.id),
     buildPrepNotes(admin, owner.id, events),
+    getDailyBriefing(admin, owner.id, localDate, { refresh: refreshNews }),
+    latestMorningBrew(),
   ]);
+  if (news.usage) await logLlmUsage(admin, owner.id, "news", news.usage);
 
   // Drafts for the mail that wants a reply, and the ClickUp projection. Both
   // are skipped entirely on preview so a review pass costs nothing and writes
@@ -221,6 +232,7 @@ export async function GET(req: Request) {
     actions,
     prep,
     draftedInflowIds: drafted,
+    briefing: { digest: news.digest, episode, error: news.error },
   });
 
   if (preview) {
@@ -233,6 +245,9 @@ export async function GET(req: Request) {
       coverage: letter.coverage,
       calendars: { total: calendars.length, ok: calOk, failed: calFailed.map((c) => c.name) },
       buttons: letter.keyboard?.inline_keyboard.flat().map((b) => b.text) ?? [],
+      news: news.digest ? { sources: news.digest.sources, cached: !news.usage } : null,
+      newsError: news.error,
+      podcast: episode?.title ?? null,
       letter: letter.text,
     });
   }

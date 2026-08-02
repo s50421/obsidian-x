@@ -88,6 +88,25 @@ const FULL = {
   prep: new Map([[`${new Date(Date.UTC(2026, 6, 29, 17, 30)).toISOString()}|Dani — quarterly review`,
     "you have notes: Dani works at V-Bank via Manhart"]]),
   draftedInflowIds: new Set(["i2"]),
+  briefing: {
+    digest: {
+      date: "2026-07-29",
+      markets: "Brent crude rose 6% on Hormuz disruption fears.",
+      geopolitics: "Iran struck US targets in Gulf states after fresh strikes.",
+      tech: "New York now requires AI-generated people in ads to be labelled.",
+      smalltalk: ["Paris reopened three Seine swimming sites.", "Typhoon Bavi strengthened near Taiwan."],
+      sources: ["reuters.com", "bbc.com"],
+      fetchedAt: NOW.toISOString(),
+    },
+    episode: {
+      title: "AI Hedge Fund Prodigy Wiped Out",
+      audioUrl: "https://example.com/ep.mp3",
+      showUrl: "https://mbdailyshow.com",
+      published: NOW,
+      durationMin: 31,
+    },
+    error: null,
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -114,7 +133,7 @@ test("only genuine reply-wanting mail offers a draft", () => {
 
 test("sections appear in the fixed order, always", () => {
   const t = composeLetter(FULL).text;
-  const order = ["NEEDS YOU", "YOUR DAY", "ACTION ITEMS", "WORTH KNOWING", "Coverage:"];
+  const order = ["NEEDS YOU", "YOUR DAY", "ACTION ITEMS", "WORTH KNOWING", "BRIEFING", "Coverage:"];
   let at = -1;
   for (const s of order) {
     const i = t.indexOf(s);
@@ -208,3 +227,79 @@ if (process.argv.includes("--sample")) {
   }
   console.log("\ncounts:", JSON.stringify(l.counts));
 }
+
+// --- the briefing block (v4.3) -------------------------------------------------
+// News is the only part of the letter that asks nothing of the owner, so it
+// must never push a decision below the fold — and a failed fetch must say so
+// rather than looking like a quiet news day.
+
+test("the briefing renders markets, world, tech, small talk and the podcast", () => {
+  const t = composeLetter(FULL).text;
+  assert.ok(t.includes("Markets — Brent crude"));
+  assert.ok(t.includes("World — Iran struck"));
+  assert.ok(t.includes("Tech — New York"));
+  assert.ok(t.includes("• Paris reopened three Seine swimming sites."));
+  assert.ok(t.includes("via reuters.com · bbc.com"), "sources are attributed");
+  assert.ok(t.includes("🎧 Morning Brew Daily: AI Hedge Fund Prodigy Wiped Out · 31 min"));
+});
+
+test("the briefing sits AFTER every section that asks something of the owner", () => {
+  const t = composeLetter(FULL).text;
+  for (const decisionSection of ["NEEDS YOU", "ACTION ITEMS"]) {
+    assert.ok(
+      t.indexOf(decisionSection) < t.indexOf("BRIEFING"),
+      `${decisionSection} must come before the news`
+    );
+  }
+});
+
+test("a failed news fetch says so — it never silently vanishes", () => {
+  const t = composeLetter({
+    ...FULL,
+    briefing: { digest: null, episode: null, error: "search returned nothing usable" },
+  }).text;
+  assert.ok(t.includes("BRIEFING"), "the section header stays");
+  assert.ok(t.includes("Couldn't fetch the news"), "and it says what happened");
+  assert.ok(t.includes("search returned nothing usable"));
+});
+
+test("no briefing supplied — the section is omitted entirely, not left empty", () => {
+  const { briefing: _omit, ...noBriefing } = FULL;
+  void _omit;
+  const t = composeLetter(noBriefing).text;
+  assert.ok(!t.includes("BRIEFING"));
+  assert.ok(t.includes("WORTH KNOWING"), "the rest of the letter is unaffected");
+});
+
+test("empty news fields are dropped rather than printed as blank rows", () => {
+  const t = composeLetter({
+    ...FULL,
+    briefing: {
+      ...FULL.briefing,
+      digest: { ...FULL.briefing.digest, geopolitics: "", tech: "", smalltalk: [] },
+    },
+  }).text;
+  assert.ok(t.includes("Markets —"));
+  assert.ok(!t.includes("World —"), "an empty field must not render a dangling label");
+  assert.ok(!t.includes("Tech —"));
+});
+
+test("the podcast is a button, so the tracking URL never shows in the text", () => {
+  const l = composeLetter(FULL);
+  assert.ok(!l.text.includes("example.com/ep.mp3"), "no raw audio URL in the body");
+  const btn = l.keyboard.inline_keyboard.flat().find((b) => b.text.includes("Morning Brew"));
+  assert.ok(btn, "a play button exists");
+  assert.equal(btn.url, "https://example.com/ep.mp3");
+});
+
+test("no podcast episode — no dead button", () => {
+  const l = composeLetter({ ...FULL, briefing: { ...FULL.briefing, episode: null } });
+  assert.ok(!l.keyboard.inline_keyboard.flat().some((b) => b.text.includes("Morning Brew")));
+});
+
+test("the briefing is plain text too — no markdown emphasis", () => {
+  const t = composeLetter(FULL).text;
+  const briefing = t.slice(t.indexOf("BRIEFING"));
+  assert.ok(!/_[^_\n]+_/.test(briefing), "no _italics_ — parse_mode is plain");
+  assert.ok(!/\*\*/.test(briefing));
+});
