@@ -26,6 +26,7 @@ import {
   sendChatAction,
 } from "@/lib/telegram";
 import { transcribeAudio } from "@/lib/transcribe";
+import { explainStory, getDailyBriefing } from "@/lib/news";
 import {
   loadRecentTurns,
   recordTurn,
@@ -36,6 +37,7 @@ import {
 import {
   resolveOwnerTz,
   isValidIanaTimeZone,
+  localDateStr,
   getSettingValue,
   setSettingValue,
   describeSixThirty,
@@ -206,6 +208,9 @@ async function handleMessage(
       break;
     case "clickup":
       await handleClickUp(admin, userId, intent.target || text, intent.context);
+      break;
+    case "news":
+      await runNewsDeepDive(admin, userId, intent.query || text);
       break;
     case "unknown":
       // Didn't parse as a clear intent — if it reads like a timezone question,
@@ -953,6 +958,42 @@ async function rateLetter(
       { parse_mode: "plain" }
     );
   }
+}
+
+/**
+ * "Tell me more about the oil story."
+ *
+ * Deliberately NOT routed through Ask. Ask searches the owner's own notes, and
+ * the news was never captured into the brain — so a briefing follow-up would
+ * correctly retrieve nothing and read as a broken assistant. This re-searches
+ * the web with the morning's digest as context, so a vague reference ("the oil
+ * one") still resolves to the right story.
+ */
+async function runNewsDeepDive(
+  admin: SupabaseClient,
+  userId: string,
+  question: string
+): Promise<void> {
+  const tz = await resolveOwnerTz(admin, userId).catch(() => process.env.BRIEF_TZ || "America/Vancouver");
+  const localDate = localDateStr(tz);
+  // Cached on the owner's local date, so this costs nothing beyond the
+  // follow-up itself and quotes exactly what he read this morning.
+  const { digest } = await getDailyBriefing(admin, userId, localDate);
+
+  const { answer, sources, usage, error } = await explainStory(question, digest);
+  if (usage) await logLlmUsage(admin, userId, "news_deep_dive", usage);
+
+  if (!answer) {
+    await sendMessage(
+      `Couldn't look that up just now${error ? ` (${error})` : ""}. Try again in a moment.`,
+      { parse_mode: "plain" }
+    );
+    return;
+  }
+  const reply = stripMarkdown(answer) + (sources.length ? `\n\nvia ${sources.join(" · ")}` : "");
+  await sendMessage(reply, { parse_mode: "plain" });
+  await recordTurn(admin, userId, "assistant", reply);
+  void pruneConversation(admin, userId);
 }
 
 async function runAsk(admin: SupabaseClient, userId: string, question: string): Promise<void> {

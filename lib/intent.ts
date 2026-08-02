@@ -19,6 +19,11 @@ export type IntentKind =
   // "actually tomorrow"). Without this the bot answered a follow-up as if it
   // were a fresh note and lost the thread.
   | "refine"
+  // The owner wants to go DEEPER on something from this morning's briefing
+  // ("tell me more about the oil story"). Distinct from "ask", which searches
+  // his own brain — the news is not in there, so an "ask" would correctly find
+  // nothing and look broken.
+  | "news"
   | "unknown";
 
 export type Intent = {
@@ -44,6 +49,7 @@ const KINDS: IntentKind[] = [
   "ask",
   "clickup",
   "refine",
+  "news",
   "unknown",
 ];
 
@@ -62,7 +68,7 @@ export async function interpretIntent(
     `what they want. Today is ${todayISO}.\n` +
     `Return ONLY a JSON object:\n` +
     `{\n` +
-    `  "intent": one of ["save","complete","complete_all","reopen","ask","clickup","refine","unknown"],\n` +
+    `  "intent": one of ["save","complete","complete_all","reopen","ask","clickup","refine","news","unknown"],\n` +
     `  "summary": one short sentence, addressed to the owner, describing what you'll do\n` +
     `             (e.g. "Save a task to pick up milk tomorrow", "Mark your dentist task done",\n` +
     `              "Reopen your rent task", "Answer what you owe on invoices",\n` +
@@ -97,6 +103,12 @@ export async function interpretIntent(
     `"add to my task list"). The giveaway is naming the board/ClickUp/task-list as the DESTINATION. ` +
     `Put the task itself in "target" — either the new task's text, or the words identifying an ` +
     `existing item. A plain to-do with NO destination named is "save", not "clickup".\n` +
+    `- "news": they want more depth on something from this morning's briefing — ` +
+    `the markets/world/tech lines, a small-talk item, or a general-knowledge point ` +
+    `("tell me more about the oil story", "explain the Hormuz thing", "why did ` +
+    `that move markets", "more on the typhoon"). The tell is a reference to ` +
+    `CURRENT EVENTS rather than to their own notes. Put what they want explained ` +
+    `in "query". If they are asking about something THEY captured, it is "ask".\n` +
     `- "unknown": genuinely unclear.\n` +
     `Rules: when torn between save and ask, prefer "save" (a statement is usually a note). ` +
     `Only pick complete/complete_all when they clearly report something as DONE, not when ` +

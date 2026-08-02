@@ -17,6 +17,10 @@ import {
 import Coverage from "./Coverage";
 import MailTuning, { type InflowRow } from "./MailTuning";
 import Scorecard from "./Scorecard";
+import DataQuality from "./DataQuality";
+import { buildDataQuality } from "@/lib/data-quality";
+import Corrections from "./Corrections";
+import { buildCorrectionReport } from "@/lib/corrections";
 import { buildScorecard } from "@/lib/scorecard";
 import {
   ensureDeclaredSources,
@@ -198,6 +202,11 @@ export default async function OpsPage({
   // v4.2 C — the vision's 8 KPIs, computed from real signals where they exist.
   const kpis = await buildScorecard(admin, uid);
 
+  // Brain-quality Phase 2 — is the structure under the product sound?
+  const dq = await buildDataQuality(admin, uid);
+  // Brain-quality Phase 2 item 5 — tune the prompt against real mistakes.
+  const corrections = await buildCorrectionReport(admin, uid);
+
   const startToday = new Date();
   startToday.setHours(0, 0, 0, 0);
   const sum = (rows: UsageRow[], f: (r: UsageRow) => number) => rows.reduce((a, r) => a + f(r), 0);
@@ -263,7 +272,11 @@ export default async function OpsPage({
 
           <Scorecard kpis={kpis} />
 
+          <DataQuality stats={dq} />
+
           <MailTuning lowConfidence={lowConfidence} recent={recentInflow} />
+
+          <Corrections report={corrections} />
 
           {/* Where the stored items came from (all-time capture mix). */}
           <div className={`flex flex-col gap-3 p-5 md:col-span-2 ${CARD}`}>

@@ -312,14 +312,29 @@ export default function DeckDetail({ card, mode, editing, busy, onClose, onEditS
                 </InspectorSection>
               )}
 
-              {/* 4 · what it connects to */}
-              {card.links.length > 0 && (
-                <InspectorSection label="Linked items" trailing={`${card.links.length}`}>
+              {/* 4 · what it connects to, and WHY.
+                  The old version listed "Linked items" with no reason, which is
+                  what made connections read as noise: 12 of the 13 links in the
+                  whole brain were only "these arrived in the same braindump",
+                  and nothing said so. Every row now carries its reason in plain
+                  words, and guesses are visibly marked as guesses. */}
+              {card.connections.length > 0 && (
+                <InspectorSection label="Connections" trailing={`${card.connections.length}`}>
                   <div className="space-y-1.5">
-                    {card.links.map((l) => (
-                      <div key={l.id} className={`${CARD_INSET} flex items-center gap-2 px-3 py-2.5 text-[13px]`}>
-                        <TypeChip type={l.type} />
-                        <span className="min-w-0 flex-1 truncate text-ink-2">{l.title}</span>
+                    {card.connections.map((c) => (
+                      <div key={`${c.otherId}-${c.kind}`} className={`${CARD_INSET} flex items-start gap-2 px-3 py-2.5 text-[13px]`}>
+                        <TypeChip type={c.otherType} />
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-ink-2">{c.otherTitle}</span>
+                          <span className="mt-0.5 block text-xs text-ink-3">
+                            {c.reason}
+                            {c.discovery && (
+                              <span className="ml-1.5 opacity-70" title="A similarity guess, not a stated fact">
+                                · a guess
+                              </span>
+                            )}
+                          </span>
+                        </span>
                       </div>
                     ))}
                   </div>

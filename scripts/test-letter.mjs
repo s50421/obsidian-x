@@ -477,3 +477,33 @@ test("mail the system already filed says so, instead of vanishing", () => {
   assert.match(letter.text, /NEEDS YOU \(1\)/);
   assert.match(letter.text, /filed in the brain/);
 });
+
+test("the briefing separates what HAPPENED from what's worth UNDERSTANDING", () => {
+  // Owner ask 2026-08-02: "2-3 general knowledge points … that make me seem up
+  // to date and educated". Folding these into smalltalk just produced three
+  // more headlines, so they get their own labelled block.
+  const l = composeLetter({
+    ...FULL,
+    briefing: {
+      ...FULL.briefing,
+      digest: {
+        ...FULL.briefing.digest,
+        smalltalk: ["Paris reopened three Seine swimming sites."],
+        knowledge: ["The Strait of Hormuz is a chokepoint for a fifth of global oil."],
+      },
+    },
+  });
+  assert.match(l.text, /Worth knowing about:/);
+  assert.match(l.text, /◦ The Strait of Hormuz/);
+  assert.match(l.text, /• Paris reopened/);
+  // …and the owner is told he can go deeper, or the feature is invisible.
+  assert.match(l.text, /Ask me about any of these/);
+});
+
+test("no knowledge points — no empty header", () => {
+  const l = composeLetter({
+    ...FULL,
+    briefing: { ...FULL.briefing, digest: { ...FULL.briefing.digest, knowledge: [] } },
+  });
+  assert.ok(!l.text.includes("Worth knowing about:"));
+});

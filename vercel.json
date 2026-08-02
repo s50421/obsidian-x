@@ -1,12 +1,40 @@
 {
   "crons": [
-    { "path": "/api/cron/brief", "schedule": "20 13 * * *" },
-    { "path": "/api/cron/deck-nudge", "schedule": "0 4 * * *" },
-    { "path": "/api/cron/consolidate", "schedule": "0 5 * * *" },
-    { "path": "/api/cron/clickup-sync", "schedule": "0 6 * * *" },
-    { "path": "/api/cron/weekly-review", "schedule": "0 1 * * 1" },
-    { "path": "/api/cron/followups", "schedule": "0 20 * * *" },
-    { "path": "/api/cron/resurface", "schedule": "0 16 * * 3" },
-    { "path": "/api/cron/backup", "schedule": "0 3 * * 0" }
+    {
+      "path": "/api/cron/brief",
+      "schedule": "20 13 * * *"
+    },
+    {
+      "path": "/api/cron/deck-nudge",
+      "schedule": "0 4 * * *"
+    },
+    {
+      "path": "/api/cron/consolidate",
+      "schedule": "0 5 * * *"
+    },
+    {
+      "path": "/api/cron/clickup-sync",
+      "schedule": "0 6 * * *"
+    },
+    {
+      "path": "/api/cron/weekly-review",
+      "schedule": "0 1 * * 1"
+    },
+    {
+      "path": "/api/cron/followups",
+      "schedule": "0 20 * * *"
+    },
+    {
+      "path": "/api/cron/resurface",
+      "schedule": "0 16 * * 3"
+    },
+    {
+      "path": "/api/cron/backup",
+      "schedule": "0 3 * * 0"
+    },
+    {
+      "path": "/api/cron/edges",
+      "schedule": "30 5 * * *"
+    }
   ]
 }

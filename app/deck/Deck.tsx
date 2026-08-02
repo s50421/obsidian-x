@@ -137,6 +137,23 @@ function CardFront({ card, mode }: { card: DeckCard; mode: Mode }) {
               ⚑ {card.junkScore >= 8 ? "would be junk" : "possible junk"}
             </span>
           )}
+          {/* Quiet, not alarming (owner decision, workshop 2026-08-02). The
+              point is that a correction costs one tap when he happens to see
+              it — the deck already sorts these to the front, so shouting about
+              it as well would just make the deck feel broken. */}
+          {card.unsure && (
+            <span
+              className="inline-flex items-center gap-1 rounded-control border px-2 py-0.5 text-[11px] font-medium"
+              style={{
+                color: "rgba(255,255,255,0.55)",
+                borderColor: "rgba(255,255,255,0.18)",
+                background: "rgba(10,10,13,0.35)",
+              }}
+              title={card.reviewReason ?? "The classifier wasn't confident about this one"}
+            >
+              ? unsure
+            </span>
+          )}
           {displayTags.slice(0, 4).map((t) => (
             <Pill key={t}>#{t}</Pill>
           ))}

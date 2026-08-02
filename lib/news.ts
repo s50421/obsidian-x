@@ -37,6 +37,16 @@ export type NewsDigest = {
   tech: string;
   /** Two or three conversation-starter items — general knowledge / global updates. */
   smalltalk: string[];
+  /**
+   * 2-3 things worth KNOWING rather than things that happened.
+   *
+   * Owner ask (2026-08-02): "general knowledge points … that make me seem up to
+   * date and educated". News tells you what changed; this tells you how
+   * something works — a concept, a mechanism, a piece of context behind a story
+   * everyone is half-discussing. Deliberately separate from `smalltalk`,
+   * because merging them produced three more headlines and no understanding.
+   */
+  knowledge: string[];
   /** Source domains, deduped, in the order the model cited them. */
   sources: string[];
   fetchedAt: string;
@@ -92,24 +102,36 @@ function buildPrompt(cfg: TopicConfig): string {
     `Search the web for what has actually happened in the LAST 24 HOURS and report it.\n\n` +
     `Return ONLY a JSON object:\n` +
     `{\n` +
-    `  "markets": "one sentence on the most consequential finance/markets development",\n` +
+    `  "markets": "2 sentences for a LONG-TERM investor: what moved, and what it ` +
+    `signals about the underlying macro trend. Plain language, no jargon.",\n` +
     `  "geopolitics": "one sentence on the most consequential geopolitical development",\n` +
     `  "tech": "one sentence on the most consequential technology/industry development",\n` +
     `  "smalltalk": ["2-3 short, genuinely interesting items a well-read person would ` +
     `mention in conversation — science, culture, sport, a notable global update. NOT ` +
-    `repeats of the three above."]\n` +
+    `repeats of the three above."],\n` +
+    `  "knowledge": ["2-3 things worth UNDERSTANDING rather than things that just ` +
+    `happened: the mechanism behind a story in the news, a concept or number that ` +
+    `explains it, or a piece of history/context that makes the reader sound informed ` +
+    `rather than merely current. Each self-contained and explained in plain language."]\n` +
     `}\n\n` +
     `HARD RULES:\n` +
     `- Report only what you actually found in search results from the last 24-48 hours. ` +
     `If you genuinely cannot find current news for a field, set it to "" — an empty ` +
     `string is correct and expected. NEVER write from memory, never speculate, never ` +
     `fill space.\n` +
-    `- NO FINANCIAL ADVICE. Describe what happened and why it moved. Never recommend ` +
-    `buying, selling, holding, allocating or avoiding anything, and never imply what ` +
-    `the reader should do with their money.\n` +
+    `- MARKETS ARE FOR UNDERSTANDING, NOT TRADING. The reader is a long-term ` +
+    `investor who wants to understand macroeconomic and global trends — the forces ` +
+    `underneath the number, in language a smart non-economist follows. Prefer the ` +
+    `structural read ("energy costs feed into inflation, which is what central banks ` +
+    `respond to") over the daily tick.\n` +
+    `- NO FINANCIAL ADVICE, and this is absolute. Describe what happened and why it ` +
+    `moved. Never recommend buying, selling, holding, allocating or avoiding ` +
+    `anything, never name a security as an opportunity, and never imply what the ` +
+    `reader should do with their money. Explaining a trend is not advising on it.\n` +
     `- Be specific: names, numbers, places. "Markets were volatile" is a failure; ` +
     `"Brent crude rose 4% to $X on Hormuz disruption fears" is right.\n` +
-    `- One sentence per field, under 220 characters. Plain text, no markdown, no emoji.` +
+    `- Under 300 characters per field, under 220 per list item. Plain text, no ` +
+    `markdown, no emoji. Explain, don't lecture — no "it's important to note".` +
     focus +
     regions
   );
@@ -130,18 +152,25 @@ export async function fetchDigest(
       geopolitics?: unknown;
       tech?: unknown;
       smalltalk?: unknown;
+      knowledge?: unknown;
     }>(content);
 
-    const str = (v: unknown) =>
-      typeof v === "string" ? stripCitationMarkers(v).slice(0, 300) : "";
+    // Markets now carries TWO sentences (what moved + what it signals), so the
+    // old 300-char cap sliced it off mid-clause — "...which then filter into".
+    // A truncated explanation is worse than a short one: it reads as a bug.
+    const str = (v: unknown, max = 300) =>
+      typeof v === "string" ? stripCitationMarkers(v).slice(0, max) : "";
 
-    const smalltalk = Array.isArray(parsed.smalltalk)
-      ? parsed.smalltalk
-          .filter((x): x is string => typeof x === "string")
-          .map((x) => stripCitationMarkers(x).slice(0, 220))
-          .filter(Boolean)
-          .slice(0, 3)
-      : [];
+    const list = (v: unknown) =>
+      Array.isArray(v)
+        ? v
+            .filter((x): x is string => typeof x === "string")
+            .map((x) => stripCitationMarkers(x).slice(0, 220))
+            .filter(Boolean)
+            .slice(0, 3)
+        : [];
+    const smalltalk = list(parsed.smalltalk);
+    const knowledge = list(parsed.knowledge);
 
     const sources = [
       ...new Set(
@@ -156,17 +185,18 @@ export async function fetchDigest(
 
     const digest: NewsDigest = {
       date: localDate,
-      markets: str(parsed.markets),
+      markets: str(parsed.markets, 460),
       geopolitics: str(parsed.geopolitics),
       tech: str(parsed.tech),
       smalltalk,
+      knowledge,
       sources,
       fetchedAt: new Date().toISOString(),
     };
 
     // If literally nothing came back, treat it as a failure rather than
     // shipping an empty block that looks like "nothing happened today".
-    if (!digest.markets && !digest.geopolitics && !digest.tech && !smalltalk.length) {
+    if (!digest.markets && !digest.geopolitics && !digest.tech && !smalltalk.length && !knowledge.length) {
       return { digest: null, usage, error: "search returned nothing usable" };
     }
     return { digest, usage, error: null };
@@ -190,7 +220,7 @@ async function chatWithAnnotations(
     body: JSON.stringify({
       model: NEWS_MODEL,
       temperature: 0,
-      max_tokens: 900,
+      max_tokens: 1300,
       usage: { include: true },
       messages: [{ role: "user", content: prompt }],
     }),
@@ -242,4 +272,66 @@ export async function getDailyBriefing(
     await setSettingValue(admin, userId, CACHE_KEY, result.digest);
   }
   return result;
+}
+
+// ---- going deeper ------------------------------------------------------------
+
+/**
+ * Answer a follow-up about something in this morning's briefing.
+ *
+ * Separate from Ask (`lib/ask-core.ts`), which searches the owner's OWN notes.
+ * The news was never captured into the brain, so routing "tell me more about
+ * the oil story" through Ask would correctly find nothing and look broken.
+ *
+ * The day's digest is passed in as context so the model knows which story is
+ * meant from a vague reference ("the oil one"), and the same web-searching
+ * model answers with real sources rather than from memory.
+ */
+export async function explainStory(
+  question: string,
+  digest: NewsDigest | null
+): Promise<{ answer: string; sources: string[]; usage: Usage | null; error: string | null }> {
+  const context = digest
+    ? [
+        digest.markets && `Markets: ${digest.markets}`,
+        digest.geopolitics && `World: ${digest.geopolitics}`,
+        digest.tech && `Tech: ${digest.tech}`,
+        ...digest.smalltalk.map((s) => `Also: ${s}`),
+        ...(digest.knowledge ?? []).map((k) => `Background: ${k}`),
+      ]
+        .filter(Boolean)
+        .join("\n")
+    : "";
+
+  const prompt =
+    `The owner read this in his briefing this morning:\n\n${context || "(no briefing available)"}\n\n` +
+    `He now asks: "${question}"\n\n` +
+    `Search the web and explain it properly — what happened, why it matters, and the ` +
+    `context someone would need to hold their own in a conversation about it. ` +
+    `Aim for 4-8 sentences.\n\n` +
+    `RULES:\n` +
+    `- Report only what you find in search results. If you cannot verify something, ` +
+    `say so plainly rather than filling the gap.\n` +
+    `- Plain language. Explain the mechanism, not just the event — he wants to ` +
+    `UNDERSTAND it, not just know it happened.\n` +
+    `- NO FINANCIAL ADVICE. Never recommend buying, selling or holding anything, ` +
+    `and never imply what he should do with his money. Explaining a trend is fine; ` +
+    `advising on it is not.\n` +
+    `- Plain text. No markdown, no headers, no bullet characters — this is read in ` +
+    `a chat app.`;
+
+  try {
+    const { content, usage, annotations } = await chatWithAnnotations(prompt);
+    const sources = [...new Set(annotations.map((a) => domainOf(a)).filter(Boolean))].slice(0, 4);
+    const answer = stripCitationMarkers(content).trim();
+    if (!answer) return { answer: "", sources, usage, error: "no answer returned" };
+    return { answer, sources, usage, error: null };
+  } catch (e) {
+    return {
+      answer: "",
+      sources: [],
+      usage: null,
+      error: e instanceof Error ? e.message : String(e),
+    };
+  }
 }

@@ -2,6 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { sendMessage } from "@/lib/telegram";
 import { createClickUpTask } from "@/lib/clickup";
 import { reprojectItemToVault } from "@/lib/vault-sync";
+import { applyEntityMerge } from "@/lib/entities";
 import { logAudit } from "@/lib/audit";
 import { embedText } from "@/lib/embed";
 import { writeVaultNote, deleteVaultNote } from "@/lib/vault";
@@ -165,6 +166,35 @@ export async function applyProposal(
       return p.kind === "retitle"
         ? await applyRetitle(admin, userId, proposalId, (p.payload ?? {}) as RetitlePayload, deps)
         : await applySplit(admin, userId, proposalId, (p.payload ?? {}) as SplitPayload, deps);
+    } catch (e) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
+  // Brain-quality Phase 2 — merging two canonical entities. Judgement calls
+  // only: the deterministic resolver already folds exact/alias/case matches
+  // without asking. A merge is close to irreversible (the losing row's evidence
+  // becomes an alias), which is exactly why it goes through this queue.
+  if (p.kind === "entity_merge") {
+    const m = (p.payload ?? {}) as { fromId?: string; intoId?: string; fromName?: string; intoName?: string };
+    if (!m.fromId || !m.intoId) return { ok: false, message: "Merge is missing its entities" };
+    try {
+      const res = await applyEntityMerge(admin, userId, m.fromId, m.intoId);
+      if (!res.ok) return { ok: false, message: "One of those entities no longer exists" };
+      await admin
+        .from("proposals")
+        .update({ status: "approved", decided_at: new Date().toISOString(), result: { moved: res.moved } })
+        .eq("id", proposalId);
+      // The surviving row is settled now, so drop the "under question" flag on
+      // whatever is left.
+      await admin.from("entities").update({ needs_review: false }).eq("id", m.intoId);
+      await logAudit(admin, {
+        user_id: userId,
+        action: "entity_merged",
+        actor: "user",
+        detail: { proposal_id: proposalId, from: m.fromName, into: m.intoName, links_moved: res.moved },
+      });
+      return { ok: true, message: `Merged "${m.fromName}" into "${m.intoName}" (${res.moved} link${res.moved === 1 ? "" : "s"} moved)` };
     } catch (e) {
       return { ok: false, message: e instanceof Error ? e.message : String(e) };
     }

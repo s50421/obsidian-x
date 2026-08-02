@@ -6,6 +6,7 @@ import { logAudit } from "@/lib/audit";
 import { logLlmUsage } from "@/lib/usage";
 import { detectSensitive } from "@/lib/sensitivity";
 import { redactCodes } from "@/lib/redact";
+import { linkItemEntities, loadEntities } from "@/lib/entities";
 import { reprojectItemToVault } from "@/lib/vault-sync";
 import { cleanTitle, CONFIDENCE_BAR, scoreJunk } from "@/lib/title-standard.mjs";
 
@@ -166,6 +167,20 @@ export async function storeEnrichedItem(
 
   if (error || !item) {
     throw new Error(`db insert failed: ${error?.message ?? "unknown"}`);
+  }
+
+  // Resolve this item's entity strings against the canon (brain-quality Phase
+  // 2). Best-effort on purpose: an entity-layer hiccup must never fail a
+  // capture — the raw strings stay on `items.entities`, so a later backfill can
+  // always catch up. `items.entities` remains the source text; item_entities is
+  // the resolved projection of it.
+  try {
+    if (it.entities?.length) {
+      const canon = await loadEntities(admin, userId);
+      await linkItemEntities(admin, userId, item.id, it.entities, canon);
+    }
+  } catch {
+    // swallowed deliberately — see above
   }
 
   let vault_path: string | null = null;

@@ -5,6 +5,8 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { isOwner } from "@/lib/owner";
 import { resolveOwnerTz, localDateStr } from "@/lib/tz";
 import { localDayBoundsUtc } from "@/app/deck/day-window";
+import { connectionsFor, type ConnectionView } from "@/lib/edges";
+import { CONFIDENCE_BAR } from "@/lib/title-standard.mjs";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -52,10 +54,21 @@ export type DeckCard = {
   external: ExternalRef;
   /** Most recent audit rows for this item, newest first. */
   audit: AuditEntryPreview[];
+  /**
+   * Typed, explainable connections (brain-quality Phase 2).
+   *
+   * Replaces the old `links` preview, which could only say THAT two items were
+   * connected. Every entry here carries the reason in plain words, which is the
+   * brief's exit test.
+   */
+  connections: ConnectionView[];
   // import-only
   proposalKind: "retitle" | "split" | null;
   reason: string | null;
   confidence: number | null;
+  /** The classifier doubted this one — badge it, and show it first. */
+  unsure: boolean;
+  reviewReason: string | null;
   newType: string | null;
   newTags: string[] | null;
   parts: { title: string; body: string; type: string; tags: string[] }[] | null;
@@ -137,12 +150,28 @@ type ItemRow = {
   junk_score: number | null;
   external: ExternalRef;
   created_at: string;
+  confidence: number | null;
+  needs_review: boolean | null;
+  review_reason: string | null;
 };
 
 // Shared by the GET handler and the evening nudge cron (app/api/cron/deck-nudge):
 // today's non-system items (owner-local calendar date) minus whatever's already
 // been swiped keep (audit) or archived (status). See the "kept" note below for
 // why archive alone isn't enough to detect a reviewed item.
+/**
+ * Did the classifier doubt this item?
+ *
+ * Either it said so itself (`needs_review`, set for an unusable title or a
+ * duplicate suspicion) or its confidence fell below the shared no-half-baked
+ * bar. One definition, used for both the ordering and the badge, so the deck
+ * cannot show a badge on an item it didn't prioritise.
+ */
+export function isUnsure(i: { needs_review?: boolean | null; confidence?: number | null }): boolean {
+  if (i.needs_review) return true;
+  return i.confidence != null && Number(i.confidence) < CONFIDENCE_BAR;
+}
+
 async function fetchTodayCandidates(
   admin: SupabaseClient,
   userId: string,
@@ -152,7 +181,7 @@ async function fetchTodayCandidates(
   const { start, end } = localDayBoundsUtc(tz, todayStr);
   const { data } = await admin
     .from("items")
-    .select("id,type,title,body,raw,status,priority,tags,source,links,due_at,entities,junk_score,external,created_at")
+    .select("id,type,title,body,raw,status,priority,tags,source,links,due_at,entities,junk_score,external,created_at,confidence,needs_review,review_reason")
     .eq("user_id", userId)
     .neq("source", "system")
     .gte("created_at", start)
@@ -193,7 +222,14 @@ async function resolveRemainingDaily(
     }
   }
 
-  const remaining = items.filter((i) => i.status !== "archived" && !keptIds.has(i.id));
+  const remaining = items
+    .filter((i) => i.status !== "archived" && !keptIds.has(i.id))
+    // Unsure items FIRST (owner decision, workshop 2026-08-02). The deck is the
+    // one moment the owner is already looking at his own memories, so putting
+    // the classifier's doubts in front of him turns a passive review into an
+    // active correction loop — and a correction is worth far more than a swipe,
+    // because it feeds the prompt tuning on /ops.
+    .sort((a, b) => Number(isUnsure(b)) - Number(isUnsure(a)));
   return { todayStr, total, remaining };
 }
 
@@ -227,9 +263,14 @@ async function handleDaily(admin: SupabaseClient, userId: string, cursorRaw: str
   const page = remaining.slice(offset, offset + limit);
   const nextCursor = offset + limit < remaining.length ? String(offset + limit) : null;
 
-  const [linkPreviews, auditTrails] = await Promise.all([
+  const [linkPreviews, auditTrails, connections] = await Promise.all([
     resolveLinkPreviews(admin, userId, page.flatMap((i) => i.links ?? [])),
     resolveAuditTrails(admin, userId, page.map((i) => i.id)),
+    // One query per card is acceptable at deck page size (<= 50) and keeps the
+    // reason text authoritative rather than reconstructed on the client.
+    Promise.all(page.map((i) => connectionsFor(admin, userId, i.id))).then(
+      (lists) => new Map(page.map((i, idx) => [i.id, lists[idx]]))
+    ),
   ]);
 
   const cards: DeckCard[] = page.map((i) => ({
@@ -252,9 +293,14 @@ async function handleDaily(admin: SupabaseClient, userId: string, cursorRaw: str
     junkScore: typeof i.junk_score === "number" ? i.junk_score : null,
     external: i.external ?? null,
     audit: auditTrails.get(i.id) ?? [],
+    connections: connections.get(i.id) ?? [],
     proposalKind: null,
     reason: null,
-    confidence: null,
+    // Daily cards carry the CLASSIFIER's own confidence, so the deck can badge
+    // what it was unsure about (import cards use the proposal's instead).
+    confidence: typeof i.confidence === "number" ? i.confidence : null,
+    unsure: isUnsure(i),
+    reviewReason: (i.review_reason as string) ?? null,
     newType: null,
     newTags: null,
     parts: null,
@@ -341,7 +387,7 @@ async function handleImport(admin: SupabaseClient, userId: string, cursorRaw: st
   if (itemIds.length) {
     const { data: itemRows } = await admin
       .from("items")
-      .select("id,type,title,body,raw,status,priority,tags,source,links,due_at,entities,junk_score,external,created_at")
+      .select("id,type,title,body,raw,status,priority,tags,source,links,due_at,entities,junk_score,external,created_at,confidence,needs_review,review_reason")
       .eq("user_id", userId)
       .in("id", itemIds);
     for (const r of (itemRows ?? []) as ItemRow[]) itemsById.set(r.id, r);
@@ -385,9 +431,16 @@ async function handleImport(admin: SupabaseClient, userId: string, cursorRaw: st
               : null,
         external: item.external ?? null,
         audit: auditTrails.get(item.id) ?? [],
+        // Import-mode cards review a PROPOSED change, not the item's place in
+        // the graph, so connections are deliberately not loaded there.
+        connections: [],
         proposalKind: isSplit ? "split" : "retitle",
         reason: payload.reason ?? null,
         confidence: typeof payload.confidence === "number" ? payload.confidence : null,
+        // Import cards review a PROPOSED change; the badge belongs to the
+        // daily deck, where the classifier's own doubt is what's on show.
+        unsure: false,
+        reviewReason: null,
         newType: isSplit ? null : (payload.newType ?? null),
         newTags: isSplit ? null : (payload.newTags ?? null),
         parts: isSplit ? (payload.parts ?? []) : null,

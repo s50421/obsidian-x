@@ -334,6 +334,14 @@ function sectionBriefing(b: Briefing | undefined): string {
     if (b.digest.geopolitics) lines.push(`World — ${b.digest.geopolitics}`);
     if (b.digest.tech) lines.push(`Tech — ${b.digest.tech}`);
     for (const s of b.digest.smalltalk) lines.push(`• ${s}`);
+    // Things worth KNOWING, kept visually distinct from things that HAPPENED.
+    // Owner ask: material that makes him sound informed rather than merely
+    // current — merging the two just produced more headlines.
+    if (b.digest.knowledge?.length) {
+      lines.push("");
+      lines.push("Worth knowing about:");
+      for (const k of b.digest.knowledge) lines.push(`◦ ${k}`);
+    }
     // Plain text, not Markdown — the letter is sent with parse_mode "plain"
     // (dynamic content can't be trusted to be valid Markdown), so underscores
     // would render literally.
@@ -345,6 +353,11 @@ function sectionBriefing(b: Briefing | undefined): string {
   if (b.episode) {
     const mins = b.episode.durationMin ? ` · ${b.episode.durationMin} min` : "";
     lines.push(`🎧 Morning Brew Daily: ${b.episode.title}${mins}`);
+  }
+
+  if (b.digest) {
+    lines.push("");
+    lines.push("Ask me about any of these — just reply, e.g. \"tell me more about the oil story\".");
   }
 
   return lines.join("\n");
