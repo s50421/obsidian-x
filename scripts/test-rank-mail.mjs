@@ -604,6 +604,37 @@ test("a known correspondent outranks a stranger, but cannot climb on familiarity
   assert.ok(dull.score < SURFACE_THRESHOLD, `familiarity is not urgency (got ${dull.score})`);
 });
 
+test("the correspondent boost cannot, by itself, promote into the queue", () => {
+  // The real regression: f-bb.de's "Eingangsbestätigung" — an acknowledgement
+  // the ranker read as "no immediate action required" — scored 45 on its own
+  // and the +10 boost landed it on exactly 55, back into NEEDS YOU. Caught by
+  // rendering a real letter, not by a fixture.
+  const known = new Set(["anerkennungszuschuss@f-bb.de"]);
+  const m = msg({
+    From: "anerkennungszuschuss@f-bb.de",
+    To: ME,
+    Subject: "Eingangsbestätigung Antrag auf Anerkennungszuschuss #A309994",
+  });
+  const c = read({ importance: 0.6, money: true, confidence: 0.75 });
+
+  const alone = scoreMail(deterministicSignals(m, ME, REAL_VIP, DEMOTE, false, new Set()), c);
+  assert.ok(alone.score < SURFACE_THRESHOLD, "it does not reach the queue on its own");
+
+  const withBoost = scoreMail(deterministicSignals(m, ME, REAL_VIP, DEMOTE, false, known), c);
+  assert.ok(withBoost.score > alone.score, "familiarity still counts for something");
+  assert.ok(
+    withBoost.score < SURFACE_THRESHOLD,
+    `but must not carry it over the bar (got ${withBoost.score})`
+  );
+
+  // …while a message that DOES earn the queue on its merits keeps the boost.
+  const real = scoreMail(
+    deterministicSignals(m, ME, REAL_VIP, DEMOTE, false, known),
+    read({ importance: 0.8, deadline: true, money: true, confidence: 0.85 })
+  );
+  assert.ok(real.score >= SURFACE_THRESHOLD, "a real action still surfaces");
+});
+
 test("a bulk sender never becomes a 'known correspondent' by repetition", () => {
   const known = new Set(["news@shop.example"]);
   const s = deterministicSignals(NEWSLETTER, ME, REAL_VIP, DEMOTE, false, known);

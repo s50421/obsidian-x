@@ -73,7 +73,7 @@ export type InflowRow = {
    * line the owner has to go and check. Populated by loadInflow; composeLetter
    * stays pure.
    */
-  filed?: "board" | "brain";
+  filed?: { where: "board" | "brain"; type: string };
 };
 
 export type ActionItem = { id: string; title: string; due_at: string | null; overdue: boolean };
@@ -194,8 +194,15 @@ export function suggestedAction(r: InflowRow): string {
   // sitting on a kanban board it never reached. A letter that overstates by one
   // word is a letter that has to be checked, which is the whole thing this
   // product exists to avoid.
-  if (r.filed === "board") return "on the board";
-  if (r.item_id) return "already filed";
+  // Say WHAT it was classified as and WHERE it went. "already filed" on its own
+  // was opaque (owner, 2026-08-02: "I dont know what already filed means, make
+  // it clear where it was clasified as what") — and vagueness here is expensive,
+  // because this line is the only notice that the system acted on your behalf.
+  if (r.filed) {
+    const place = r.filed.where === "board" ? "on your ClickUp board" : "in the brain";
+    return `filed as ${r.filed.type} · ${place}`;
+  }
+  if (r.item_id) return "filed in the brain";
   const signals = new Set(r.ranked_reason?.signals ?? []);
   if (signals.has("awaiting my reply")) return "reply owed";
   if (signals.has("direct question")) return "answer";
@@ -457,8 +464,20 @@ export function composeLetter(input: ComposeInput): Letter {
   }
 
   // v4.2.2 — the episode goes behind a button so the tracking URL never shows.
-  const audio = input.briefing?.episode?.audioUrl;
-  if (audio) rows.push([{ text: "🎧 Play Morning Brew", url: audio }]);
+  //
+  // TWO buttons, because they do different jobs (owner, 2026-08-02: "the morning
+  // brew letter should be a link to the podcast"). The enclosure URL is a raw
+  // megaphone tracking .mp3, so tapping it hands you a bare audio file rather
+  // than a podcast. Megaphone's feed carries no per-episode <link>, so the show
+  // page is the closest thing to "the podcast" that actually exists — it opens
+  // properly and hands off to a podcast app.
+  const ep = input.briefing?.episode;
+  if (ep) {
+    const podRow: InlineButton[] = [];
+    if (ep.audioUrl) podRow.push({ text: "🎧 Play episode", url: ep.audioUrl });
+    if (ep.showUrl) podRow.push({ text: "Morning Brew ↗", url: ep.showUrl });
+    if (podRow.length) rows.push(podRow);
+  }
 
   // Scorecard instrumentation (workstream C) — one tap, every morning. This is
   // the only source for KPI #1 (brief accuracy) that isn't guesswork.
@@ -513,16 +532,20 @@ export async function loadInflow(
   if (itemIds.length) {
     const { data: items } = await admin
       .from("items")
-      .select("id,external")
+      .select("id,external,type")
       .in("id", itemIds);
-    const onBoard = new Map<string, boolean>();
+    const filedAs = new Map<string, { where: "board" | "brain"; type: string }>();
     for (const it of items ?? []) {
       const ext = (it.external ?? {}) as { clickup?: { id?: string } };
-      onBoard.set(it.id as string, !!ext.clickup?.id);
+      filedAs.set(it.id as string, {
+        where: ext.clickup?.id ? "board" : "brain",
+        type: (it.type as string) ?? "note",
+      });
     }
     for (const r of rows) {
       if (!r.item_id) continue;
-      r.filed = onBoard.get(r.item_id) ? "board" : "brain";
+      const f = filedAs.get(r.item_id);
+      if (f) r.filed = f;
     }
   }
   return rows;

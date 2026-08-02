@@ -20,7 +20,7 @@ import {
   type InflowRow,
 } from "@/lib/letter";
 import { pregenerateDrafts } from "@/lib/letter-drafts";
-import { projectActionItems } from "@/lib/task-projection";
+import { loadProjectableTasks, projectActionItems } from "@/lib/task-projection";
 import { getDailyBriefing } from "@/lib/news";
 import { latestMorningBrew } from "@/lib/podcast";
 import {
@@ -217,10 +217,24 @@ export async function GET(req: Request) {
   // no proposals, tasks or spend.
   let drafted = new Set<string>();
   let projection = null as Awaited<ReturnType<typeof projectActionItems>> | null;
+  // Tasks that qualified for the board but were held back by this run's cap.
+  // Reported rather than dropped silently — a cap the owner can't see reads
+  // exactly like a projection that quietly stopped working.
+  let projectionBacklog = 0;
   if (!preview) {
     drafted = await pregenerateDrafts(admin, owner.id, inflow as InflowRow[]);
     // v4.2 B — today's action items ARE the board by the time the letter lands.
-    projection = await projectActionItems(admin, owner.id, actions);
+    //
+    // The board gets MORE than today, though: a task dated weeks out still
+    // belongs on the kanban now, and projecting only today's items is why the
+    // Nano Nuclear vote never appeared there. Union, deduped by id — today's
+    // items keep priority, and loadProjectableTasks caps the rest so a backlog
+    // arrives over several mornings instead of as one wall of approvals.
+    const extra = await loadProjectableTasks(admin, owner.id);
+    const seen = new Set(actions.map((a) => a.id));
+    const toProject = [...actions, ...extra.tasks.filter((t) => !seen.has(t.id))];
+    projection = await projectActionItems(admin, owner.id, toProject);
+    if (extra.remaining) projectionBacklog = extra.remaining;
   }
 
   const letter = composeLetter({
@@ -309,6 +323,6 @@ export async function GET(req: Request) {
     counts: letter.counts,
     coverage: letter.coverage,
     drafts: drafted.size,
-    projection,
+    projection: projection ? { ...projection, backlog: projectionBacklog } : null,
   });
 }

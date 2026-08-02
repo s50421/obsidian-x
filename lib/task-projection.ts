@@ -116,6 +116,54 @@ export async function projectNewCaptures(
  * item is skipped here — so running this every morning can't produce duplicate
  * tasks for a multi-day to-do.
  */
+/** How many new board proposals one run may ask the owner to approve. */
+export const MAX_PROJECTIONS_PER_RUN = 5;
+
+/**
+ * Open tasks that belong on the board but would never get there.
+ *
+ * The letter's ACTION ITEMS section is deliberately "what's due today" — that
+ * is what a morning briefing is for. The BOARD is a different question, and
+ * conflating them meant a task with a real future deadline never got projected:
+ * the Nano Nuclear annual-meeting vote was captured, correctly typed as a task
+ * and correctly dated Sept 14, and then sat invisible in the brain because the
+ * projection only ever saw today's items (owner, 2026-08-02: "the NNE vote
+ * should be a task in my clickup").
+ *
+ * Soonest deadline first, undated last, and CAPPED per run: the trust dial is
+ * 'ask', so every projection costs the owner a Telegram approval. A backlog of
+ * open tasks would otherwise arrive as one indiscriminate burst the first time
+ * this ran. The cap lets it drain over a few days instead, newest deadlines
+ * first, and the caller reports what was left behind rather than hiding it.
+ */
+export async function loadProjectableTasks(
+  admin: SupabaseClient,
+  userId: string,
+  limit = MAX_PROJECTIONS_PER_RUN
+): Promise<{ tasks: ActionItem[]; remaining: number }> {
+  const { data } = await admin
+    .from("items")
+    .select("id,title,due_at,external")
+    .eq("user_id", userId)
+    .eq("status", "open")
+    .eq("type", "task")
+    .is("valid_to", null)
+    .order("due_at", { ascending: true, nullsFirst: false })
+    .limit(200);
+
+  const unlinked = (data ?? []).filter(
+    (r) => !(r.external as { clickup?: { id?: string } } | null)?.clickup?.id
+  );
+  const nowMs = Date.now();
+  const tasks = unlinked.slice(0, limit).map((r) => ({
+    id: r.id as string,
+    title: (r.title as string) ?? "(untitled)",
+    due_at: (r.due_at as string) ?? null,
+    overdue: r.due_at ? new Date(r.due_at as string).getTime() < nowMs : false,
+  }));
+  return { tasks, remaining: Math.max(0, unlinked.length - tasks.length) };
+}
+
 export async function projectActionItems(
   admin: SupabaseClient,
   userId: string,

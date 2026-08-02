@@ -561,8 +561,13 @@ export function scoreMail(s: Signals, c: ContentRead): Ranked {
   // Deliberately modest, and deliberately never applied to bulk mail: this is
   // meant to break the tie between a person and a machine, not to let anyone
   // who has ever emailed twice climb into the decision queue on familiarity
-  // alone. It cannot, by itself, carry a message over the surface threshold.
-  if (s.knownCorrespondent && !s.bulk && !s.promotionsLabel && !s.automated) {
+  // alone. `scoreBeforeBoost` is kept so that promise can be ENFORCED below
+  // rather than merely asserted — the first real letter rendered with this
+  // boost pushed an f-bb.de acknowledgement ("no immediate action required")
+  // from 45 to exactly 55, reproducing the Canvas bug it was meant to help fix.
+  const scoreBeforeBoost = score;
+  const boosted = s.knownCorrespondent && !s.bulk && !s.promotionsLabel && !s.automated;
+  if (boosted) {
     score += 10;
     signals.push("known correspondent");
   }
@@ -599,6 +604,15 @@ export function scoreMail(s: Signals, c: ContentRead): Ranked {
     // still say that an automated notification is an automated notification.
     if (s.bulk || s.promotionsLabel) score = Math.min(score, 25);
     if (s.automated) score = Math.min(score, 35);
+
+    // Familiarity is a tie-breaker, never a promotion. If the message would not
+    // have reached the decision queue on its own merits, the boost may bring it
+    // to the top of WORTH KNOWING but no further. The floors below can still
+    // lift it — those represent a real action or an explicit owner instruction,
+    // which is a different claim entirely.
+    if (boosted && scoreBeforeBoost < SURFACE_THRESHOLD) {
+      score = Math.min(score, SURFACE_THRESHOLD - 1);
+    }
 
     // Route (a) — CONTENT. An action-bearing message the model is sure about
     // reaches the decision queue on its own, with no name on any list.

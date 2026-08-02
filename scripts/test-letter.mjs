@@ -287,9 +287,19 @@ test("empty news fields are dropped rather than printed as blank rows", () => {
 test("the podcast is a button, so the tracking URL never shows in the text", () => {
   const l = composeLetter(FULL);
   assert.ok(!l.text.includes("example.com/ep.mp3"), "no raw audio URL in the body");
-  const btn = l.keyboard.inline_keyboard.flat().find((b) => b.text.includes("Morning Brew"));
-  assert.ok(btn, "a play button exists");
-  assert.equal(btn.url, "https://example.com/ep.mp3");
+  const buttons = l.keyboard.inline_keyboard.flat();
+
+  // Two buttons, because they do different jobs. The enclosure URL is a raw
+  // tracking .mp3 — owner feedback on the first real letter was that tapping it
+  // gives you an audio file, not a podcast — so the show page is offered too.
+  const play = buttons.find((b) => b.text.includes("Play episode"));
+  assert.ok(play, "a direct-play button exists");
+  assert.equal(play.url, "https://example.com/ep.mp3");
+
+  const show = buttons.find((b) => b.text.includes("Morning Brew"));
+  assert.ok(show, "a link to the podcast itself exists");
+  assert.equal(show.url, "https://mbdailyshow.com");
+  assert.ok(!show.url.endsWith(".mp3"), "the podcast link must not be a bare audio file");
 });
 
 test("no podcast episode — no dead button", () => {
@@ -444,12 +454,17 @@ test("mail the system already filed says so, instead of vanishing", () => {
     ...row("ib", "Interactive Brokers <ib@proxydocs.com>", 55),
     item_id: "11111111-1111-1111-1111-111111111111",
   };
-  assert.equal(suggestedAction(filed), "already filed", "in the brain, but not on any board");
   assert.equal(
-    suggestedAction({ ...filed, filed: "board" }),
-    "on the board",
-    "only claimed when the item really carries a ClickUp reference"
+    suggestedAction({ ...filed, filed: { where: "brain", type: "reference" } }),
+    "filed as reference · in the brain",
+    "says what it was classified as, and that it is NOT on a board"
   );
+  assert.equal(
+    suggestedAction({ ...filed, filed: { where: "board", type: "task" } }),
+    "filed as task · on your ClickUp board",
+    "the board is only claimed when a ClickUp reference really exists"
+  );
+  assert.equal(suggestedAction(filed), "filed in the brain", "fallback when the join found nothing");
 
   const letter = composeLetter({
     tz: TZ,
@@ -460,5 +475,5 @@ test("mail the system already filed says so, instead of vanishing", () => {
     actions: [],
   });
   assert.match(letter.text, /NEEDS YOU \(1\)/);
-  assert.match(letter.text, /already filed/);
+  assert.match(letter.text, /filed in the brain/);
 });
