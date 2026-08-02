@@ -1,4 +1,4 @@
-// Obsidian-X v4.3 — keep one-time secrets out of Telegram.
+// Obsidian-X v4.2.2 (letter refinement) — keep one-time secrets out of Telegram.
 //
 // Owner directive (2026-08-02): "verification codes should never be sent
 // through telegram." A digest had echoed a live Crypto.com code (763264) into

@@ -405,7 +405,7 @@ export function composeLetter(input: ComposeInput): Letter {
     rows.push([{ text: `✓ ${a.title.slice(0, 40)}`, callback_data: `done:${a.id}` }]);
   }
 
-  // The episode goes behind a button so the tracking URL never shows.
+  // v4.2.2 — the episode goes behind a button so the tracking URL never shows.
   const audio = input.briefing?.episode?.audioUrl;
   if (audio) rows.push([{ text: "🎧 Play Morning Brew", url: audio }]);
 

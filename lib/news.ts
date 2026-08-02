@@ -2,7 +2,8 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { chat, extractJson, type Usage } from "@/lib/openrouter";
 import { getSettingValue, setSettingValue } from "@/lib/tz";
 
-// Obsidian-X v4.3 — the morning briefing block.
+// Obsidian-X v4.2.2 (letter refinement) — the morning briefing block.
+// NOTE: not v4.3-brief.md, which is the MCP shared brain and is untouched.
 //
 // The owner asked for markets, geopolitics, tech, and small-talk material in
 // the daily letter. Three constraints shape this file:

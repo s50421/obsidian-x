@@ -98,7 +98,7 @@ export async function sendMessage(
   if (!chatId) return null;
   const markdown = (opts.parse_mode ?? "Markdown") === "Markdown";
 
-  // v4.3 — one-time codes are stripped HERE, at the single point everything
+  // v4.2.2 — one-time codes are stripped HERE, at the single point everything
   // outbound passes through, so no future feature can leak one by forgetting.
   // Owner directive after a digest echoed a live Crypto.com code into the chat,
   // where it lived in scroll history and notification previews.

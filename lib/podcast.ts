@@ -1,4 +1,4 @@
-// Obsidian-X v4.3 — the Morning Brew Daily episode for the letter.
+// Obsidian-X v4.2.2 (letter refinement) — the Morning Brew Daily episode.
 //
 // Straight from the publisher's RSS rather than a scraper or a model: the feed
 // is authoritative, free, and can't hallucinate an episode that doesn't exist.
