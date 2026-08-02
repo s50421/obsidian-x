@@ -2,12 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
-type Node = { id: string; title: string; type: string };
-type Edge = { source: string; target: string };
-type Pt = { x: number; y: number };
-
-const W = 1000;
-const H = 700;
+import { layout, W, H, type GraphEdge as Edge, type GraphNode as Node, type Pt } from "./force-layout";
 
 // Node hues from the Apple-dark design foundations (match Ops bars + chips).
 const COLORS: Record<string, string> = {
@@ -22,65 +17,6 @@ const COLORS: Record<string, string> = {
 const color = (t: string) => COLORS[t] ?? "#8e9ab0";
 
 // A small Fruchterman-Reingold-style force layout, computed in the browser.
-function layout(nodes: Node[], edges: Edge[]): Pt[] {
-  const n = nodes.length;
-  const idx = new Map(nodes.map((nd, i) => [nd.id, i]));
-  const E = edges
-    .map((e) => [idx.get(e.source), idx.get(e.target)] as [number | undefined, number | undefined])
-    .filter((e): e is [number, number] => e[0] != null && e[1] != null);
-
-  // Deterministic jitter (not Math.random) so SSR and client hydrate identically.
-  const jitter = (s: number) => {
-    const v = Math.sin(s * 127.1) * 43758.5453;
-    return (v - Math.floor(v) - 0.5) * 30;
-  };
-  const p: Pt[] = nodes.map((_, i) => ({
-    x: W / 2 + Math.cos((i / n) * 2 * Math.PI) * 250 + jitter(i * 2 + 1),
-    y: H / 2 + Math.sin((i / n) * 2 * Math.PI) * 250 + jitter(i * 2 + 2),
-  }));
-
-  const k = Math.max(30, Math.sqrt((W * H) / Math.max(1, n)) * 0.6);
-  const iters = n > 300 ? 90 : 220;
-  for (let it = 0; it < iters; it++) {
-    const disp: Pt[] = p.map(() => ({ x: 0, y: 0 }));
-    for (let i = 0; i < n; i++) {
-      for (let j = i + 1; j < n; j++) {
-        let dx = p[i].x - p[j].x;
-        let dy = p[i].y - p[j].y;
-        const d = Math.hypot(dx, dy) || 0.01;
-        const f = (k * k) / d;
-        dx /= d;
-        dy /= d;
-        disp[i].x += dx * f;
-        disp[i].y += dy * f;
-        disp[j].x -= dx * f;
-        disp[j].y -= dy * f;
-      }
-    }
-    for (const [a, b] of E) {
-      let dx = p[a].x - p[b].x;
-      let dy = p[a].y - p[b].y;
-      const d = Math.hypot(dx, dy) || 0.01;
-      const f = (d * d) / k;
-      dx /= d;
-      dy /= d;
-      disp[a].x -= dx * f;
-      disp[a].y -= dy * f;
-      disp[b].x += dx * f;
-      disp[b].y += dy * f;
-    }
-    const temp = Math.max(1, 40 * (1 - it / iters));
-    for (let i = 0; i < n; i++) {
-      disp[i].x += (W / 2 - p[i].x) * 0.02;
-      disp[i].y += (H / 2 - p[i].y) * 0.02;
-      const dl = Math.hypot(disp[i].x, disp[i].y) || 0.01;
-      p[i].x += (disp[i].x / dl) * Math.min(dl, temp);
-      p[i].y += (disp[i].y / dl) * Math.min(dl, temp);
-    }
-  }
-  return p;
-}
-
 // Fit the viewBox around the laid-out nodes (with padding) so the canvas opens
 // framed on the graph rather than clustered in a corner.
 function fitView(pts: Pt[]): { x: number; y: number; w: number; h: number } {
@@ -194,7 +130,23 @@ export default function Graph({ nodes, edges }: { nodes: Node[]; edges: Edge[] }
             const a = pos[idx.get(e.source)!];
             const b = pos[idx.get(e.target)!];
             if (!a || !b) return null;
-            return <line key={i} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke="#ffffff" strokeOpacity={0.1} />;
+            // A guess looks like a guess. The single legacy link that survived
+            // into 2026-08 was a similarity edge drawn identically to a fact,
+            // which is a large part of why the graph read as random.
+            return (
+              <line
+                key={i}
+                x1={a.x}
+                y1={a.y}
+                x2={b.x}
+                y2={b.y}
+                stroke="#ffffff"
+                strokeOpacity={e.discovery ? 0.07 : 0.16}
+                strokeDasharray={e.discovery ? "3 4" : undefined}
+              >
+                {e.reason && <title>{e.reason}</title>}
+              </line>
+            );
           })}
         {pos &&
           nodes.map((nd, i) => (
