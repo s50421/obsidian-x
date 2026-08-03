@@ -61,19 +61,34 @@ const LINK_STYLE: Record<string, { color: string; width: number; dash?: number[]
 /**
  * Ceiling on the OPENING zoom.
  *
- * zoomToFit does what it says — with a 3-node cluster in a 400px-wide viewport
- * it happily zooms to 10x, and since nodes are drawn in world coordinates they
- * arrive as dinner plates with their labels pushed off-screen. Framing the
- * largest component is right; framing it at any magnification is not. Panning
- * and pinching past this afterwards is unrestricted.
+ * Generous, because the node sizing below is what actually stops a small
+ * cluster looking absurd. Clamping the zoom hard instead left a 6-node graph
+ * marooned in the middle of an empty canvas — the fit was doing the right thing
+ * and the clamp was undoing it.
  */
-const MAX_INITIAL_ZOOM = 1.8;
+const MAX_INITIAL_ZOOM = 5;
+
+/** On-screen node radius stays in this band whatever the zoom. */
+const MIN_SCREEN_R = 3.5;
+const MAX_SCREEN_R = 13;
 
 const nodeColor = (n: Node) =>
   n.kind === "entity" ? ENTITY_COLOR : (TYPE_COLORS[n.sub] ?? TYPE_COLORS.note);
 
-/** Bigger with degree, but sub-linearly — one hub must not dwarf everything. */
-const nodeRadius = (n: Node) => (n.kind === "entity" ? 7 : 4) + Math.min(6, Math.sqrt(n.degree) * 2);
+/**
+ * Bigger with degree, but sub-linearly — one hub must not dwarf everything.
+ *
+ * Returned in WORLD units, derived from a target SCREEN size. Nodes drawn in
+ * raw world units grow with the zoom, so a tight cluster arrived as dinner
+ * plates with the labels shoved off the canvas; sizing from the screen back
+ * means a node looks the same whether you are framed on two nodes or two
+ * hundred.
+ */
+const nodeRadius = (n: Node, scale = 1) => {
+  const target = (n.kind === "entity" ? 7 : 4.5) + Math.min(5, Math.sqrt(n.degree) * 1.8);
+  const onScreen = Math.max(MIN_SCREEN_R, Math.min(MAX_SCREEN_R, target));
+  return onScreen / scale;
+};
 
 export type GraphCanvasProps = {
   data: GraphPayload;
@@ -148,7 +163,7 @@ export default function GraphCanvas({
         // Hover dims everything that is not the node or its neighbours, which
         // is how a dense area becomes readable without zooming.
         const dim = hovering ? (n.id === hovering.id || neighbourRef.current.has(n.id) ? 1 : 0.15) : 1;
-        const r = nodeRadius(n);
+        const r = nodeRadius(n, scale);
 
         ctx.globalAlpha = dim;
         ctx.beginPath();
@@ -186,11 +201,12 @@ export default function GraphCanvas({
         ctx.fillText(label, lx, ly);
         ctx.globalAlpha = 1;
       })
-      .nodePointerAreaPaint((node, color, ctx) => {
+      .nodePointerAreaPaint((node, color, ctx, scale) => {
         const n = node as Node;
         ctx.fillStyle = color;
         ctx.beginPath();
-        ctx.arc(n.x ?? 0, n.y ?? 0, nodeRadius(n) + 4, 0, 2 * Math.PI);
+        // Generous hit area — a thumb is far bigger than a 4px dot.
+        ctx.arc(n.x ?? 0, n.y ?? 0, nodeRadius(n, scale) + 8 / scale, 0, 2 * Math.PI);
         ctx.fill();
       })
       .linkCanvasObject((link, ctx, scale) => {
