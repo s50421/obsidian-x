@@ -26,6 +26,8 @@ export type EdgeKind =
   | "thread"
   | "similar";
 
+export type EdgeStatus = "confirmed" | "suggested" | "dismissed";
+
 export type Edge = {
   src: string;
   dst: string;
@@ -34,19 +36,41 @@ export type Edge = {
   weight: number;
   entity_id: string | null;
   discovery: boolean;
+  /**
+   * The Obsidian model (see migration 0013). A `confirmed` edge is drawn; a
+   * `suggested` one is only offered. Similarity is a suggestion, never a fact.
+   */
+  status: EdgeStatus;
 };
 
 /**
- * Similarity floor for a `similar` edge.
+ * A sanity floor, NOT a similarity threshold.
  *
- * The same MEASURED value the capture path uses for auto-linking (NN p75 on the
- * live corpus, embedding_v2 @1024d). Reusing it rather than picking a new
- * number keeps one definition of "clearly related" in the system.
+ * The old design used an absolute cutoff of 0.662, borrowed from the
+ * capture-time auto-link job (measured 2026-07-28 on a 29-item corpus that
+ * still contained the Apple Notes). Re-measured on the live brain 2026-08-02:
+ * the highest similarity between ANY two items is 0.503, p95 is 0.372, median
+ * 0.174. So the cutoff was unreachable and every similarity edge was silently
+ * impossible — which is why shared-tag edges were left doing all the work.
+ *
+ * An absolute cutoff cannot survive a corpus that changes: it was right in
+ * July, wrong in August, and would be wrong again by October. Ranking asks a
+ * question that needs no recalibration — "is this item among your nearest
+ * neighbours, and are you among mine?" This floor only stops two items with
+ * nothing in common being paired in a nearly-empty brain.
  */
-export const SIMILAR_THRESHOLD = 0.662;
+export const SIMILARITY_FLOOR = 0.3;
 
-/** A discovery edge is a guess, so a node may only make a few. */
-export const MAX_SIMILAR_PER_ITEM = 3;
+/**
+ * How many nearest neighbours count, and mutually.
+ *
+ * MEASURED on the live corpus: at top-2 the suggestions are exactly the four
+ * clusters the owner said were missing (the three shopping-list items, the
+ * family-legal pair, the money/admin group, the weekend group). At top-3 the
+ * noise returns — "RBC checks" pairs with a Crypto.com passkey alert. Two is
+ * the knee.
+ */
+export const NEIGHBOURS_PER_ITEM = 2;
 
 /**
  * Tags too broad to mean two items are related.
@@ -144,6 +168,9 @@ export function deriveEntityEdges(
           weight: 1,
           entity_id: entityId,
           discovery: false,
+          // The [[wikilink]] equivalent: a shared canonical entity is a stated
+          // fact about both items, not an inference. Drawn.
+          status: "confirmed",
         });
       }
     }
@@ -152,63 +179,50 @@ export function deriveEntityEdges(
 }
 
 /**
- * Topic edges: two items carrying the same specific taxonomy tag.
+ * Topic edges — RETIRED as a connection kind (2026-08-02).
  *
- * Broad tags are excluded (see BROAD_TAGS) and so is any tag shared by a large
- * slice of the corpus — a tag that describes a third of the brain describes
- * nothing about a pair within it.
+ * Kept as a function so the decision is visible rather than silently absent.
+ * A shared tag was the source of every bad link the owner named, twice:
+ * "both tagged tech" joined a Crypto.com passkey alert to chip-AI research;
+ * "both tagged finance" joined a reimbursement chase to the same passkey alert.
+ * The reason is structural, not a tuning problem — a tag says what an item is
+ * ABOUT, not that two items have anything to do with each other, and with 25
+ * tags over a small corpus collisions are inevitable.
+ *
+ * Obsidian does not use tags as edges either; it can show them as NODES. That
+ * is the right home for this if the owner wants tags in the graph, and it
+ * belongs to the parked renderer work.
+ *
+ * This reverses one workshop pick ("shared topic tag" as an edge kind), which
+ * is why it is documented here instead of deleted.
  */
-export function deriveTopicEdges(items: ItemRow[], maxShare = 0.2): Edge[] {
-  const byTag = new Map<string, ItemRow[]>();
-  for (const it of items) {
-    for (const t of it.tags ?? []) {
-      if (BROAD_TAGS.has(t) || SYSTEM_TAGS.has(t)) continue;
-      const arr = byTag.get(t) ?? [];
-      arr.push(it);
-      byTag.set(t, arr);
-    }
-  }
-
-  const out: Edge[] = [];
-  const limit = Math.max(2, Math.floor(items.length * maxShare));
-  for (const [tag, rows] of byTag) {
-    if (rows.length < 2 || rows.length > limit) continue;
-    for (let i = 0; i < rows.length; i++) {
-      for (let j = i + 1; j < rows.length; j++) {
-        const [src, dst] = orderPair(rows[i].id, rows[j].id);
-        if (src === dst) continue;
-        out.push({
-          src,
-          dst,
-          kind: "shared_topic",
-          reason: `both tagged ${tag}`,
-          weight: 0.6,
-          entity_id: null,
-          discovery: false,
-        });
-      }
-    }
-  }
-  return out;
+export function deriveTopicEdges(): Edge[] {
+  return [];
 }
 
 /**
- * Similarity edges from embedding_v2, capped per item and marked as guesses.
+ * SUGGESTED links from embedding similarity, by mutual rank.
  *
- * These are the only edges that cannot really explain themselves — "these read
- * similarly" is the honest limit of what an embedding knows — so they carry
- * `discovery: true` and the UI is expected to present them differently. That
- * honesty is the point: the single legacy link that survived into 2026-08 was a
- * similarity edge presented as though it were a fact.
+ * Obsidian's model, adapted: it never infers an edge, it surfaces "unlinked
+ * mentions" for a human to accept. Similarity is this system's equivalent of a
+ * hunch, so it produces suggestions the owner confirms — never lines on the
+ * canvas. That is the honest status for "these read similarly", and drawing it
+ * as though it were a fact is most of why the graph read as random.
+ *
+ * Mutual rank rather than an absolute cutoff: A must be among B's nearest and B
+ * among A's. That is self-calibrating as the corpus grows, and it is what makes
+ * the three shopping-list items find each other while a passkey alert and some
+ * chip research do not.
  */
-export async function deriveSimilarEdges(
+export async function deriveSimilarSuggestions(
   admin: SupabaseClient,
   userId: string,
   items: { id: string; title: string }[]
 ): Promise<Edge[]> {
   const titleById = new Map(items.map((i) => [i.id, i.title]));
-  const out: Edge[] = [];
 
+  // Each item's ranked neighbours, in one pass.
+  const nearest = new Map<string, { id: string; similarity: number }[]>();
   for (const it of items) {
     const { data: emb } = await admin
       .from("items")
@@ -222,28 +236,83 @@ export async function deriveSimilarEdges(
       query_embedding: typeof vec === "string" ? JSON.parse(vec) : vec,
       owner: userId,
       exclude_id: it.id,
-      match_count: MAX_SIMILAR_PER_ITEM + 2,
+      match_count: NEIGHBOURS_PER_ITEM + 4,
     });
+    nearest.set(
+      it.id,
+      ((neigh ?? []) as { id: string; similarity: number }[])
+        .filter((n) => titleById.has(n.id) && n.similarity >= SIMILARITY_FLOOR)
+        .slice(0, NEIGHBOURS_PER_ITEM)
+    );
+  }
 
-    const hits = ((neigh ?? []) as { id: string; similarity: number }[])
-      .filter((n) => n.similarity >= SIMILAR_THRESHOLD && titleById.has(n.id))
-      .slice(0, MAX_SIMILAR_PER_ITEM);
-
+  const out: Edge[] = [];
+  for (const [id, hits] of nearest) {
     for (const n of hits) {
-      const [src, dst] = orderPair(it.id, n.id);
+      // Mutual only. A one-way "you're my nearest" is usually an item with no
+      // real relatives reaching for the closest thing in the room.
+      if (!(nearest.get(n.id) ?? []).some((m) => m.id === id)) continue;
+      const [src, dst] = orderPair(id, n.id);
       if (src === dst) continue;
       out.push({
         src,
         dst,
         kind: "similar",
-        reason: `reads similarly to "${titleById.get(n.id)}" (${Math.round(n.similarity * 100)}% match)`,
+        // The other item's title is already shown next to this line, so naming
+        // it again read as stutter. Say what the system actually knows: how
+        // close, and that closeness is all it knows.
+        reason: `reads similarly (${Math.round(n.similarity * 100)}% match) — not a stated connection`,
         weight: n.similarity,
         entity_id: null,
         discovery: true,
+        status: "suggested",
       });
     }
   }
   return out;
+}
+
+/**
+ * SUGGESTED links from unlinked mentions — Obsidian's actual mechanism.
+ *
+ * An item's TEXT contains a canonical entity's name or one of its aliases, but
+ * the classifier never extracted it, so no link exists. Obsidian solves this
+ * exact problem the same way: match the note name or alias in raw text and
+ * offer it. No model, no embedding, no threshold — it is either in the text or
+ * it isn't, which makes it the most explainable suggestion the system can make.
+ */
+export function deriveUnlinkedMentions(
+  items: { id: string; title: string; body: string | null }[],
+  entities: EntityRow[],
+  existing: LinkRow[]
+): { itemId: string; entityId: string; entityName: string; matched: string }[] {
+  const linked = new Set(existing.map((l) => `${l.item_id}|${l.entity_id}`));
+  const out: { itemId: string; entityId: string; entityName: string; matched: string }[] = [];
+
+  for (const e of entities) {
+    if (!e.edge_eligible) continue;
+    const forms = [e.name, ...((e as EntityRow & { aliases?: string[] }).aliases ?? [])]
+      .map((f) => (f ?? "").trim())
+      .filter((f) => f.length >= 3); // "V-B", "Jo" would match half the corpus
+    if (!forms.length) continue;
+
+    for (const it of items) {
+      if (linked.has(`${it.id}|${e.id}`)) continue;
+      const hay = `${it.title ?? ""}\n${it.body ?? ""}`;
+      const hit = forms.find((f) => {
+        // Whole-word match, so "Don" doesn't fire inside "don't" and "Anna"
+        // doesn't fire inside "Annapolis".
+        const re = new RegExp(`(^|[^\\p{L}\\p{N}])${escapeRe(f)}([^\\p{L}\\p{N}]|$)`, "iu");
+        return re.test(hay);
+      });
+      if (hit) out.push({ itemId: it.id, entityId: e.id, entityName: e.name, matched: hit });
+    }
+  }
+  return out;
+}
+
+function escapeRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 /** Collapse duplicates produced by two passes proposing the same pair+kind. */
@@ -269,19 +338,25 @@ export async function rebuildEdges(
   admin: SupabaseClient,
   userId: string,
   opts: { includeSimilar?: boolean } = {}
-): Promise<{ written: number; byKind: Record<string, number> }> {
+): Promise<{
+  written: number;
+  byKind: Record<string, number>;
+  confirmed: number;
+  suggested: number;
+  mentions: number;
+}> {
   const { data: allItems } = await admin
     .from("items")
-    .select("id,title,tags,source")
+    .select("id,title,body,tags,source")
     .eq("user_id", userId)
     .neq("status", "archived")
     .is("valid_to", null)
     .limit(2000);
-  const items = edgeEligibleItems((allItems ?? []) as ItemRow[]);
+  const items = edgeEligibleItems((allItems ?? []) as (ItemRow & { body: string | null })[]);
 
   const { data: entities } = await admin
     .from("entities")
-    .select("id,name,kind,edge_eligible")
+    .select("id,name,kind,aliases,edge_eligible")
     .eq("user_id", userId);
 
   const live = new Set(items.map((i) => i.id));
@@ -289,35 +364,78 @@ export async function rebuildEdges(
     .from("item_entities")
     .select("item_id,entity_id,raw_name")
     .eq("user_id", userId);
+  const liveLinks = ((links ?? []) as LinkRow[]).filter((l) => live.has(l.item_id));
 
-  const edges = [
-    ...deriveEntityEdges(
-      (entities ?? []) as EntityRow[],
-      ((links ?? []) as LinkRow[]).filter((l) => live.has(l.item_id))
-    ),
-    ...deriveTopicEdges(items),
-    ...(opts.includeSimilar ? await deriveSimilarEdges(admin, userId, items) : []),
+  // Everything the owner has already ruled on. Re-offering a dismissed pair on
+  // every nightly rebuild would make the feature feel broken inside a week, and
+  // a confirmed pair must keep its confirmed status through a rebuild.
+  const { data: ruled } = await admin
+    .from("edges")
+    .select("src,dst,kind,status")
+    .eq("user_id", userId)
+    .in("status", ["dismissed", "confirmed"]);
+  const verdict = new Map<string, string>();
+  for (const r of ruled ?? []) verdict.set(`${r.src}|${r.dst}|${r.kind}`, r.status as string);
+
+  // Obsidian's "unlinked mentions": the entity's name or an alias appears in an
+  // item's text but was never extracted, so no link exists. Attached directly as
+  // an item↔entity link, which then produces normal confirmed entity edges —
+  // exactly as if the classifier had caught it.
+  const mentions = deriveUnlinkedMentions(
+    items.map((i) => ({ id: i.id, title: i.title, body: i.body })),
+    (entities ?? []) as EntityRow[],
+    liveLinks
+  );
+  for (const m of mentions) {
+    await admin.from("item_entities").upsert(
+      { item_id: m.itemId, entity_id: m.entityId, user_id: userId, raw_name: m.matched },
+      { onConflict: "item_id,entity_id" }
+    );
+    liveLinks.push({ item_id: m.itemId, entity_id: m.entityId, raw_name: m.matched });
+  }
+
+  const derived = [
+    ...deriveEntityEdges((entities ?? []) as EntityRow[], liveLinks),
+    ...deriveTopicEdges(),
+    ...(opts.includeSimilar ? await deriveSimilarSuggestions(admin, userId, items) : []),
   ];
 
-  const final = dedupeEdges(edges);
+  const final = dedupeEdges(derived)
+    .map((e) => {
+      const v = verdict.get(`${e.src}|${e.dst}|${e.kind}`);
+      if (v === "dismissed") return { ...e, status: "dismissed" as EdgeStatus };
+      if (v === "confirmed") return { ...e, status: "confirmed" as EdgeStatus };
+      return e;
+    })
+    // A dismissed pair is not stored again — the owner said no, and the verdict
+    // map above is what remembers it for the next rebuild.
+    .filter((e) => e.status !== "dismissed");
 
-  await admin.from("edges").delete().eq("user_id", userId);
+  await admin.from("edges").delete().eq("user_id", userId).neq("status", "dismissed");
   const byKind: Record<string, number> = {};
   for (let i = 0; i < final.length; i += 200) {
     const chunk = final.slice(i, i + 200).map((e) => ({ ...e, user_id: userId }));
     await admin.from("edges").insert(chunk);
   }
   for (const e of final) byKind[e.kind] = (byKind[e.kind] ?? 0) + 1;
-  return { written: final.length, byKind };
+  return {
+    written: final.length,
+    byKind,
+    confirmed: final.filter((e) => e.status === "confirmed").length,
+    suggested: final.filter((e) => e.status === "suggested").length,
+    mentions: mentions.length,
+  };
 }
 
 export type ConnectionView = {
+  edgeId: string;
   otherId: string;
   otherTitle: string;
   otherType: string;
   kind: EdgeKind;
   reason: string;
   discovery: boolean;
+  status: EdgeStatus;
 };
 
 /** Everything connected to one item, best first, for the inspector. */
@@ -328,9 +446,13 @@ export async function connectionsFor(
 ): Promise<ConnectionView[]> {
   const { data } = await admin
     .from("edges")
-    .select("src,dst,kind,reason,weight,discovery")
+    .select("id,src,dst,kind,reason,weight,discovery,status")
     .eq("user_id", userId)
+    .neq("status", "dismissed")
     .or(`src.eq.${itemId},dst.eq.${itemId}`)
+    // Confirmed first, then by strength — a suggestion must never sit above a
+    // stated fact in the list.
+    .order("status", { ascending: true })
     .order("weight", { ascending: false })
     .limit(50);
 
@@ -350,12 +472,14 @@ export async function connectionsFor(
       const other = byId.get(otherId);
       if (!other) return null;
       return {
+        edgeId: r.id as string,
         otherId,
         otherTitle: (other.title as string) ?? "(untitled)",
         otherType: (other.type as string) ?? "note",
         kind: r.kind as EdgeKind,
         reason: r.reason as string,
         discovery: r.discovery as boolean,
+        status: (r.status as EdgeStatus) ?? "confirmed",
       };
     })
     .filter((x): x is ConnectionView => !!x);

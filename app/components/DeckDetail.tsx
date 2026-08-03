@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import type { DeckCard } from "@/app/api/deck/route";
+import SuggestedLink from "./SuggestedLink";
 import {
   BTN_PRIMARY,
   BTN_SECONDARY,
@@ -319,26 +320,64 @@ export default function DeckDetail({ card, mode, editing, busy, onClose, onEditS
                   and nothing said so. Every row now carries its reason in plain
                   words, and guesses are visibly marked as guesses. */}
               {card.connections.length > 0 && (
-                <InspectorSection label="Connections" trailing={`${card.connections.length}`}>
-                  <div className="space-y-1.5">
-                    {card.connections.map((c) => (
-                      <div key={`${c.otherId}-${c.kind}`} className={`${CARD_INSET} flex items-start gap-2 px-3 py-2.5 text-[13px]`}>
-                        <TypeChip type={c.otherType} />
-                        <span className="min-w-0 flex-1">
-                          <span className="block truncate text-ink-2">{c.otherTitle}</span>
-                          <span className="mt-0.5 block text-xs text-ink-3">
-                            {c.reason}
-                            {c.discovery && (
-                              <span className="ml-1.5 opacity-70" title="A similarity guess, not a stated fact">
-                                · a guess
-                              </span>
-                            )}
-                          </span>
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </InspectorSection>
+                <>
+                  {(() => {
+                    const linked = card.connections.filter((c) => c.status !== "suggested");
+                    const suggested = card.connections.filter((c) => c.status === "suggested");
+                    return (
+                      <>
+                        {linked.length > 0 && (
+                          <InspectorSection label="Connections" trailing={`${linked.length}`}>
+                            <div className="space-y-1.5">
+                              {linked.map((c) => (
+                                <div
+                                  key={c.edgeId}
+                                  className={`${CARD_INSET} flex items-start gap-2 px-3 py-2.5 text-[13px]`}
+                                >
+                                  <TypeChip type={c.otherType} />
+                                  <span className="min-w-0 flex-1">
+                                    <span className="block truncate text-ink-2">{c.otherTitle}</span>
+                                    <span className="mt-0.5 block text-xs text-ink-3">{c.reason}</span>
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          </InspectorSection>
+                        )}
+
+                        {/* Obsidian's "Unlinked mentions", adapted: offered next
+                            to the real links but visibly separate, and one tap
+                            makes it real. Nothing reaches the graph until it
+                            has been stood behind. */}
+                        {suggested.length > 0 && (
+                          <InspectorSection
+                            label="Possibly related"
+                            trailing={`${suggested.length}`}
+                          >
+                            <p className="mb-2 text-xs leading-relaxed text-ink-3">
+                              Not shown in the graph. Tap Link if these belong together.
+                            </p>
+                            <div className="space-y-1.5">
+                              {suggested.map((c) => (
+                                <div
+                                  key={c.edgeId}
+                                  className={`${CARD_INSET} flex items-start gap-2 px-3 py-2.5 text-[13px] opacity-80`}
+                                >
+                                  <TypeChip type={c.otherType} />
+                                  <span className="min-w-0 flex-1">
+                                    <span className="block truncate text-ink-2">{c.otherTitle}</span>
+                                    <span className="mt-0.5 block text-xs text-ink-3">{c.reason}</span>
+                                  </span>
+                                  <SuggestedLink edgeId={c.edgeId} />
+                                </div>
+                              ))}
+                            </div>
+                          </InspectorSection>
+                        )}
+                      </>
+                    );
+                  })()}
+                </>
               )}
 
               {/* 5 · provenance — where it came from, where it went, and

@@ -14,6 +14,7 @@ register(new URL("./_alias-hook.mjs", import.meta.url), import.meta.url);
 const {
   deriveEntityEdges,
   deriveTopicEdges,
+  deriveUnlinkedMentions,
   edgeEligibleItems,
   dedupeEdges,
   orderPair,
@@ -69,16 +70,62 @@ test("undirected pairs collapse — (a,b) and (b,a) are one edge", () => {
   assert.equal(twice.length, 1);
 });
 
+test("a shared entity is CONFIRMED — it is a stated fact, not a guess", () => {
+  const [e] = deriveEntityEdges(
+    [ent("e1", "Dani", "person")],
+    [link("a", "e1", "Dani"), link("b", "e1", "Dani")]
+  );
+  assert.equal(e.status, "confirmed", "the [[wikilink]] equivalent is drawn");
+  assert.equal(e.discovery, false);
+});
+
+test("topic tags are retired as an edge kind", () => {
+  // Reverses a workshop pick, deliberately: 'both tagged tech' joined a
+  // Crypto.com passkey alert to chip-AI research, and 'both tagged finance'
+  // joined a reimbursement chase to the same alert. A tag says what an item is
+  // ABOUT, not that two items relate. Obsidian does not use tags as edges
+  // either — it shows them as NODES.
+  assert.deepEqual(deriveTopicEdges(), []);
+});
+
+test("an unlinked mention is found by name OR alias, on word boundaries", () => {
+  // Obsidian's actual mechanism: the note's name or alias appears in another
+  // note's text but was never linked.
+  const entities = [{ id: "e1", name: "Beate Manhart", kind: "person", edge_eligible: true, aliases: ["mum"] }];
+  const items = [
+    { id: "a", title: "Court strategy", body: "Send the docs to mum before Friday." },
+    { id: "b", title: "Groceries", body: "Bananas, parsley." },
+    { id: "c", title: "Grumble", body: "I mumble when I read." },
+  ];
+  const hits = deriveUnlinkedMentions(items, entities, []);
+  assert.equal(hits.length, 1, "only the real mention");
+  assert.equal(hits[0].itemId, "a");
+  assert.equal(hits[0].matched, "mum");
+  // "mumble" must not match "mum" — a substring match would connect half the
+  // corpus to the owner's mother.
+  assert.ok(!hits.some((h) => h.itemId === "c"));
+});
+
+test("an already-linked entity is not re-offered as a mention", () => {
+  const entities = [{ id: "e1", name: "Dani", kind: "person", edge_eligible: true, aliases: [] }];
+  const items = [{ id: "a", title: "Meeting", body: "Prep for Dani." }];
+  assert.deepEqual(deriveUnlinkedMentions(items, entities, [link("a", "e1")]), []);
+});
+
+test("self/system entities are never mentioned into the graph", () => {
+  const entities = [{ id: "me", name: "David Manhart", kind: "person", edge_eligible: false, aliases: [] }];
+  const items = [{ id: "a", title: "x", body: "David Manhart signed it." }];
+  assert.deepEqual(deriveUnlinkedMentions(items, entities, []), []);
+});
+
 test("broad and system tags never make a topic edge", () => {
   // 'food' sat on 5 of 23 unrelated shopping items; 'digest' on every
   // auto-generated summary. Neither means two items are related.
   const items = [
     item("a", "Bananas", ["food"]),
     item("b", "Tiramisu", ["food"]),
-    item("c", "Digest 1", ["digest"]),
-    item("d", "Digest 2", ["digest"]),
   ];
-  assert.deepEqual(deriveTopicEdges(items), []);
+  assert.deepEqual(deriveTopicEdges(items), [], "topic edges are retired entirely");
 });
 
 test("a tag covering too much of the corpus is not a connection", () => {
@@ -87,16 +134,7 @@ test("a tag covering too much of the corpus is not a connection", () => {
   assert.deepEqual(deriveTopicEdges(many), []);
 });
 
-test("a specific shared tag DOES connect", () => {
-  const items = [
-    item("a", "Father lawsuit", ["legal"]),
-    item("b", "Court strategy docs", ["legal"]),
-    ...Array.from({ length: 8 }, (_, i) => item(`x${i}`, `other${i}`, ["tech"])),
-  ];
-  const edges = deriveTopicEdges(items);
-  assert.equal(edges.length, 1);
-  assert.equal(edges[0].reason, "both tagged legal");
-});
+
 
 test("machine-written items are excluded from the graph entirely", () => {
   // The first real run produced 13 edges, SIX of which only joined the three
@@ -108,5 +146,4 @@ test("machine-written items are excluded from the graph entirely", () => {
   ];
   const eligible = edgeEligibleItems(items);
   assert.deepEqual(eligible.map((i) => i.id), ["c"]);
-  assert.deepEqual(deriveTopicEdges(eligible), [], "one real item cannot pair with itself");
 });

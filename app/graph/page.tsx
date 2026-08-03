@@ -34,8 +34,12 @@ export default async function GraphPage() {
       .is("valid_to", null),
     admin
       .from("edges")
-      .select("src,dst,kind,reason,discovery")
+      .select("src,dst,kind,reason,discovery,status")
+      // Only CONFIRMED connections are drawn. Suggestions live in the item
+      // inspector, where they can be accepted or dismissed — the Obsidian model:
+      // nothing appears on the canvas that a human hasn't stood behind.
       .eq("user_id", user.id)
+      .eq("status", "confirmed")
       .limit(5000),
   ]);
 
