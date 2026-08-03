@@ -44,7 +44,15 @@ export default async function GraphPage() {
       <AppNav />
       <main className="obx-safe-x obx-pb-bar mx-auto flex w-full max-w-5xl flex-1 flex-col px-4 pt-4 md:px-8 md:pt-8">
         <PageHeader title="Graph" subtitle={subtitle} />
-        {data.nodes.length === 0 ? (
+        {data.error ? (
+          // A failed query and an empty brain are different states. Rendering
+          // them the same way told an owner with 23 memories that he had none.
+          <EmptyState
+            glyph="⚠"
+            title="Couldn't load the graph"
+            body={<>The database didn&apos;t answer: {data.error}. Reload in a moment — nothing is lost.</>}
+          />
+        ) : data.nodes.length === 0 ? (
           <EmptyState
             glyph="◎"
             title="No active notes yet"

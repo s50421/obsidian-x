@@ -44,6 +44,16 @@ export type GraphPayload = {
   /** How many nodes sit in the largest connected component — the default frame. */
   largestComponentSize: number;
   counts: { items: number; entities: number; links: number; suggested: number };
+  /**
+   * Set when a query FAILED, as opposed to legitimately returning nothing.
+   *
+   * These are two completely different states and they were rendering
+   * identically: a transient error made the page announce "No active notes
+   * yet" to an owner with 23 memories. Silence that reads as emptiness is the
+   * exact failure the coverage panel exists to prevent, and it does not get a
+   * pass here.
+   */
+  error: string | null;
 };
 
 /**
@@ -95,8 +105,7 @@ export async function loadGraph(
   admin: SupabaseClient,
   userId: string
 ): Promise<GraphPayload> {
-  const [{ data: items }, { data: edges }, { data: entities }, { data: entLinks }] =
-    await Promise.all([
+  const [itemsRes, edgesRes, entitiesRes, entLinksRes] = await Promise.all([
       admin
         .from("items")
         .select("id,title,type,source")
@@ -116,8 +125,15 @@ export async function loadGraph(
         .eq("user_id", userId)
         .eq("edge_eligible", true)
         .limit(5000),
-      admin.from("item_entities").select("item_id,entity_id,raw_name").eq("user_id", userId).limit(20000),
-    ]);
+    admin.from("item_entities").select("item_id,entity_id,raw_name").eq("user_id", userId).limit(20000),
+  ]);
+
+  const failure =
+    itemsRes.error ?? edgesRes.error ?? entitiesRes.error ?? entLinksRes.error ?? null;
+  const items = itemsRes.data;
+  const edges = edgesRes.data;
+  const entities = entitiesRes.data;
+  const entLinks = entLinksRes.data;
 
   // Machine-written summaries are not memories and are excluded from the graph
   // for the same reason they are excluded from edge derivation.
@@ -217,5 +233,6 @@ export async function loadGraph(
       links: links.length,
       suggested: suggested ?? 0,
     },
+    error: failure ? failure.message : null,
   };
 }
