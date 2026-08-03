@@ -149,6 +149,15 @@ export default function GraphCanvas({
     graphRef.current = g;
 
     g.backgroundColor("#08080b")
+      // MUST be false. force-graph skips redraws when it believes nothing has
+      // changed — but it can only see ITS own state, and these renderers read
+      // `hoverRef`, which it knows nothing about. Left at its default (true) it
+      // concluded nothing ever changed and suppressed EVERY frame: the canvas
+      // stayed empty while the instance sat there holding six correctly
+      // positioned nodes, which is why this looked like a layout or camera bug
+      // for so long. Confirmed by instrumenting the 2D context — zero draw
+      // calls, not even a clearRect.
+      .autoPauseRedraw(false)
       .nodeId("id")
       .nodeRelSize(1)
       .linkSource("source")
@@ -275,12 +284,6 @@ export default function GraphCanvas({
       // The simulation settling is the best single moment to frame — but not
       // the only one that matters (see the staggered passes below).
       .onEngineStop(() => frameFnRef.current());
-
-    // Debug handle. This canvas cannot be inspected from the outside — a blank
-    // graph looks identical whether the data is missing, the nodes are
-    // unpositioned, or the camera is parked off-screen, and each of those was
-    // guessed at in turn before this existed. Read-only, single-user app.
-    (window as unknown as { __obxGraph?: unknown }).__obxGraph = g;
 
     setReady(true);
     return () => {
