@@ -3,6 +3,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { ownerEmail } from "@/lib/owner";
 import { isCronAuthorized } from "@/lib/cron";
 import { sendMessage } from "@/lib/telegram";
+import { notifyOwner } from "@/lib/conversation";
 import { logAudit } from "@/lib/audit";
 import { pickResurface } from "@/lib/resurface";
 
@@ -32,7 +33,7 @@ export async function GET(req: Request) {
   const message = picks.length ? `💡 From your brain — worth a fresh look:\n\n${lines}` : "";
 
   if (!dry && picks.length) {
-    await sendMessage(message, { parse_mode: "plain" });
+    await notifyOwner(admin, owner.id, message);
     for (const p of picks) {
       await logAudit(admin, {
         user_id: uid,

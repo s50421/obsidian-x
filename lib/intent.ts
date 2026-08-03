@@ -195,7 +195,18 @@ export function obviousKind(text: string): TurnKind | null {
     return "conversation";
   }
   // Direct address / instructions to the assistant.
-  if (/^(add|put|move|mark|change|update|delete|remove|show|list|check|tell me|what|when|where|which|who|why|how|are|is|do|does|can you|could you|draft|write)\b/i.test(t)) {
+  //
+  // SECOND-PERSON openers matter as much as bare imperatives. Live failure
+  // 2026-08-03 23:36: "You can close Sandrine French pastry" starts with "You",
+  // read as plain declarative text, and was filed as a NOTE — the owner got a
+  // "Save this?" card in reply to a direct instruction. Anything addressed to
+  // the assistant is a conversation whatever mood it is phrased in.
+  if (/^(you can|you could|you should|please|go ahead|feel free to|i want you to|i need you to|let'?s)\b/i.test(t)) {
+    return "conversation";
+  }
+  if (
+    /^(add|put|move|mark|change|update|delete|remove|show|list|check|tell me|what|when|where|which|who|why|how|are|is|do|does|can you|could you|draft|write|close|complete|finish|archive|reopen|rename|link|connect|schedule|set|make)\b/i.test(t)
+  ) {
     return "conversation";
   }
   return null;
@@ -215,6 +226,10 @@ export async function classifyTurn(
     `"capture" — he is dumping something to remember: a note, an idea, one or more to-dos, a ` +
     `braindump, a transcribed voice memo. No question, no instruction to the assistant. This is ` +
     `the DEFAULT for plain declarative text.\n` +
+    `An instruction can be phrased politely and still be an instruction: "you can close X", ` +
+    `"maybe archive that", "the rental car one is done" are all CONVERSATION — he is telling you ` +
+    `to do something or reporting a state change he expects you to act on, not asking you to ` +
+    `remember a sentence.\n` +
     `"conversation" — a question, a request to look something up or change something, a follow-up ` +
     `to what was just said, or anything referring to earlier context.\n` +
     (hasRecentConversation

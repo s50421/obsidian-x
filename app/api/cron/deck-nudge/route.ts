@@ -3,6 +3,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { ownerEmail } from "@/lib/owner";
 import { isCronAuthorized } from "@/lib/cron";
 import { sendMessage, type InlineKeyboard } from "@/lib/telegram";
+import { notifyOwner } from "@/lib/conversation";
 import { logAudit } from "@/lib/audit";
 import { resolveOwnerTz, localHHMM, localDateStr, FALLBACK_TZ } from "@/lib/tz";
 import { countDailyUnreviewed, countPendingImportProposals } from "@/app/api/deck/route";
@@ -114,7 +115,11 @@ export async function GET(req: Request) {
     : "🃏 Nothing to review tonight — your deck is clear.";
 
   const reply_markup: InlineKeyboard = { inline_keyboard: [[{ text: "Open the deck →", url: DECK_URL }]] };
-  const delivery = await sendMessage(text, { parse_mode: "plain", reply_markup });
+  const delivery = await notifyOwner(admin, owner.id, text, {
+    // The nudge carries a button; the recorded line only needs to say what it
+    // was about, so "review them" can resolve on the next message.
+    summary: text.split("\n")[0],
+  });
   if (!delivery) {
     return NextResponse.json(
       { ok: false, sent: false, error: "telegram rejected the message", tz, localTime },
@@ -135,7 +140,7 @@ export async function GET(req: Request) {
   return NextResponse.json({
     ok: true,
     sent: true,
-    messageId: delivery.message_id,
+    delivered: delivery,
     forced: force,
     tz,
     localTime,

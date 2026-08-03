@@ -192,3 +192,49 @@ test("the loop never claims confusion about work it actually did", async () => {
     "the old swallow-the-instruction fallback must be gone"
   );
 });
+
+// --- two live failures from 2026-08-03 23:35 ----------------------------------
+
+test("a politely-phrased instruction is not a note", async () => {
+  // "You can close Sandrine French pastry" was filed as a NOTE — the owner got
+  // a "Save this?" card in reply to a direct instruction, because the opener
+  // was second person rather than imperative.
+  const { obviousKind } = await import("../lib/intent.ts");
+  for (const t of [
+    "You can close that ClickUp task",
+    "You can close Sandrine French pastry",
+    "Please archive the barbecue task",
+    "Go ahead and mark it done",
+    "Let's move that to Friday",
+    "Close the rental car task",
+  ]) {
+    assert.equal(obviousKind(t), "conversation", `misread as capture: "${t}"`);
+  }
+  // …without swallowing genuine captures.
+  for (const t of ["Buy milk and eggs tomorrow", "Idea: a bot that reads my mail"]) {
+    assert.notEqual(obviousKind(t), "conversation", `over-caught: "${t}"`);
+  }
+});
+
+test("the bot's own notifications are recorded, or 'that' has nothing to point at", async () => {
+  // Live: the bot announced "ClickUp reopened → Sandrine French pastry", the
+  // owner said "you can close that ClickUp task" one message later, and the
+  // agent replied it had "nothing specific from our recent chat". The referent
+  // was the message directly above — its own.
+  const fs = await import("node:fs");
+  const conv = fs.readFileSync(new URL("../lib/conversation.ts", import.meta.url), "utf8");
+  assert.match(conv, /export async function notifyOwner/);
+  assert.match(conv, /both sides have to be in the record/);
+  // Only what actually landed may be recorded.
+  assert.match(conv, /if \(delivered\)/);
+
+  for (const f of [
+    "../lib/clickup-sync.ts",
+    "../app/api/cron/deck-nudge/route.ts",
+    "../app/api/cron/followups/route.ts",
+    "../app/api/cron/resurface/route.ts",
+  ]) {
+    const src = fs.readFileSync(new URL(f, import.meta.url), "utf8");
+    assert.match(src, /notifyOwner\(/, `${f} still speaks without remembering it`);
+  }
+});

@@ -7,7 +7,7 @@ import {
 } from "@/lib/clickup";
 import { reprojectItemToVault } from "@/lib/vault-sync";
 import { logAudit } from "@/lib/audit";
-import { sendMessage } from "@/lib/telegram";
+import { notifyOwner } from "@/lib/conversation";
 
 // v2.2 — ClickUp → brain status sync-back. Shared by the ClickUp webhook
 // (real-time, best-effort) and the reconcile cron (reliable). The DB stays the
@@ -59,7 +59,10 @@ async function apply(
   await admin.from("items").update({ status }).eq("id", item.id).eq("user_id", item.user_id);
   await logAudit(admin, { user_id: item.user_id, item_id: item.id, action, actor: "worker", detail: { via: "clickup" } });
   await reprojectItemToVault(admin, item.id);
-  if (notify) await sendMessage(notice, { parse_mode: "plain" });
+  // notifyOwner, not sendMessage: this message is a thing the bot SAID, and
+  // "you can close that ClickUp task" one message later has to be able to find
+  // it. See notifyOwner's header for the live failure.
+  if (notify) await notifyOwner(admin, item.user_id, notice);
 }
 
 // Fetch the single linked item for a ClickUp task id (used by the webhook).

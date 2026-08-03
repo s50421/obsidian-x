@@ -149,3 +149,41 @@ export async function pruneConversation(admin: SupabaseClient, userId: string): 
     // best-effort
   }
 }
+
+/**
+ * Tell the owner something AND remember having told him.
+ *
+ * The bot speaks to the owner from many places that are not the chat loop — a
+ * ClickUp status change, the deck nudge, a follow-up chaser, the morning
+ * letter. None of those were recorded, so from the agent's point of view they
+ * never happened.
+ *
+ * Live failure, 2026-08-03 23:35. The bot announced "ClickUp reopened →
+ * Sandrine French pastry", the owner replied "you can close that ClickUp task"
+ * one message later, and the agent said it had "nothing specific from our
+ * recent chat pointing to which task". The referent was the message directly
+ * above it — the bot's own. A pronoun can point at anything either party said,
+ * so both sides have to be in the record.
+ *
+ * `summary` exists because the morning letter is thousands of characters and
+ * storing it whole would push the real conversation out of the window. What is
+ * needed to resolve "that" is a sentence, not a transcript.
+ */
+export async function notifyOwner(
+  admin: SupabaseClient,
+  userId: string,
+  text: string,
+  opts: { summary?: string; meta?: Record<string, unknown> } = {}
+): Promise<boolean> {
+  const { sendMessage } = await import("@/lib/telegram");
+  const delivered = await sendMessage(text, { parse_mode: "plain" });
+  // Record only what actually landed — a note about a message the owner never
+  // saw would make the agent reason about a shared context that isn't shared.
+  if (delivered) {
+    await recordTurn(admin, userId, "assistant", opts.summary ?? text, {
+      channel: "notification",
+      ...(opts.meta ?? {}),
+    });
+  }
+  return !!delivered;
+}

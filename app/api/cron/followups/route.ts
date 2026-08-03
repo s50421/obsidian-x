@@ -3,6 +3,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { ownerEmail } from "@/lib/owner";
 import { isCronAuthorized } from "@/lib/cron";
 import { sendMessage } from "@/lib/telegram";
+import { notifyOwner } from "@/lib/conversation";
 import { logAudit } from "@/lib/audit";
 import { logLlmUsage } from "@/lib/usage";
 import { detectFollowups } from "@/lib/followups";
@@ -40,7 +41,7 @@ export async function GET(req: Request) {
   if (!dry) {
     if (usage) await logLlmUsage(admin, uid, "followups", usage);
     if (followups.length) {
-      await sendMessage(message, { parse_mode: "plain" });
+      await notifyOwner(admin, owner.id, message);
       for (const f of followups) {
         await logAudit(admin, {
           user_id: uid,
