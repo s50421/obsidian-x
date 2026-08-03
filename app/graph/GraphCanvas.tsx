@@ -324,17 +324,53 @@ export default function GraphCanvas({
     if (!g || !ready) return;
 
     frameFnRef.current = () => {
-      const framed = showOrphans
-        ? new Set(view.nodes.filter((n) => n.component === 0).map((n) => n.id))
-        : new Set(view.nodes.map((n) => n.id));
-      if (framed.size > 1) g.zoomToFit(400, 60, (n) => framed.has((n as Node).id));
-      else g.zoomToFit(400, 60);
-      // Clamp after the fit animation lands. zoomToFit does what it says: with
-      // a three-node cluster in a phone-width viewport it reaches ~10x, and
-      // nodes drawn in world coordinates arrive as dinner plates.
-      setTimeout(() => {
-        if (g.zoom() > MAX_INITIAL_ZOOM) g.zoom(MAX_INITIAL_ZOOM, 250);
-      }, 450);
+      // Frame by computing the bounds OURSELVES rather than calling zoomToFit.
+      //
+      // zoomToFit run before the simulation has assigned coordinates computes
+      // its bounds from undefined x/y, produces NaN, and writes that NaN
+      // straight into the camera transform — after which every later pass is
+      // fitting a broken viewport and the canvas is simply blank. That is not a
+      // hypothetical: the canvas measured ZERO painted pixels on a fresh load,
+      // meaning the whole graph had been parked outside the viewport.
+      //
+      // Doing the arithmetic here means we can refuse to frame until there is
+      // something real to frame, which no amount of retrying could achieve.
+      const live = g.graphData().nodes as Node[];
+      const framed = live.filter((n) => {
+        if (!Number.isFinite(n.x) || !Number.isFinite(n.y)) return false;
+        // Orphans hidden (the default): everything visible IS the connected
+        // structure. Orphans shown: frame the largest component, or the cloud
+        // dominates and the structure shrinks into a corner again.
+        return showOrphans ? n.component === 0 : true;
+      });
+      if (!framed.length) return;
+
+      const xs = framed.map((n) => n.x as number);
+      const ys = framed.map((n) => n.y as number);
+      const minX = Math.min(...xs);
+      const maxX = Math.max(...xs);
+      const minY = Math.min(...ys);
+      const maxY = Math.max(...ys);
+
+      const w = g.width();
+      const h = g.height();
+      if (!w || !h) return;
+
+      // Labels sit to the RIGHT of their node, so the right margin is wider —
+      // otherwise the longest title in the graph is always half cut off.
+      const padX = 150;
+      const padY = 60;
+      const spanX = Math.max(maxX - minX, 1);
+      const spanY = Math.max(maxY - minY, 1);
+      const zoom = Math.min(
+        (w - padX * 2) / spanX,
+        (h - padY * 2) / spanY,
+        MAX_INITIAL_ZOOM
+      );
+      if (!Number.isFinite(zoom) || zoom <= 0) return;
+
+      g.centerAt((minX + maxX) / 2, (minY + maxY) / 2, 400);
+      g.zoom(Math.max(0.05, zoom), 400);
     };
 
     g.graphData({ nodes: view.nodes as Node[], links: view.links as unknown as Link[] });
