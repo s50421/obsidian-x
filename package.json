@@ -21,6 +21,7 @@
     "@octokit/rest": "^22.0.1",
     "@supabase/ssr": "^0.12.3",
     "@supabase/supabase-js": "^2.110.8",
+    "force-graph": "^1.51.4",
     "mammoth": "^1.12.0",
     "next": "16.2.11",
     "node-ical": "^0.27.1",
