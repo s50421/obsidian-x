@@ -147,3 +147,20 @@ test("machine-written items are excluded from the graph entirely", () => {
   const eligible = edgeEligibleItems(items);
   assert.deepEqual(eligible.map((i) => i.id), ["c"]);
 });
+
+test("every edge is inserted with a features object, never undefined", () => {
+  // supabase-js unions the keys across a bulk insert and fills the gaps with
+  // NULL. One edge carrying features therefore made every edge WITHOUT them
+  // send features:null into a NOT NULL column, failing the entire insert —
+  // after the delete had already run. The rebuild reported "written: 14" over
+  // an empty table.
+  const rows = [
+    { src: "a", dst: "b", kind: "shared_person", reason: "x", weight: 1, entity_id: "e", discovery: false, status: "confirmed" },
+    { src: "c", dst: "d", kind: "similar", reason: "y", weight: 0.5, entity_id: null, discovery: true, status: "suggested", features: { similarity: 0.5 } },
+  ];
+  const prepared = rows.map((e) => ({ ...e, user_id: "u", features: e.features ?? {} }));
+  for (const p of prepared) {
+    assert.ok(p.features && typeof p.features === "object", "features must always be an object");
+  }
+  assert.deepEqual(prepared[0].features, {});
+});

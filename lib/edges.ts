@@ -617,13 +617,27 @@ export async function rebuildEdges(
 
   await admin.from("edges").delete().eq("user_id", userId).neq("status", "dismissed");
   const byKind: Record<string, number> = {};
+  let written = 0;
   for (let i = 0; i < final.length; i += 200) {
-    const chunk = final.slice(i, i + 200).map((e) => ({ ...e, user_id: userId }));
-    await admin.from("edges").insert(chunk);
+    const chunk = final.slice(i, i + 200).map((e) => ({
+      ...e,
+      user_id: userId,
+      // ALWAYS an object, never undefined. supabase-js unions the keys across a
+      // bulk insert and fills the gaps with null, so one edge carrying features
+      // made every edge WITHOUT them send features:null — and the column is NOT
+      // NULL. That is what made the whole insert fail.
+      features: e.features ?? {},
+    }));
+    // The error was swallowed here, and the delete above had already run — so a
+    // failed insert reported a healthy rebuild while leaving the graph empty.
+    // Exactly the class of invisible failure this project keeps being bitten by.
+    const { error } = await admin.from("edges").insert(chunk);
+    if (error) throw new Error(`edge insert failed: ${error.message}`);
+    written += chunk.length;
   }
   for (const e of final) byKind[e.kind] = (byKind[e.kind] ?? 0) + 1;
   return {
-    written: final.length,
+    written,
     byKind,
     confirmed: final.filter((e) => e.status === "confirmed").length,
     suggested: final.filter((e) => e.status === "suggested").length,
