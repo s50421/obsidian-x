@@ -97,6 +97,11 @@ export default function GraphCanvas({
   const holder = useRef<HTMLDivElement>(null);
   const graphRef = useRef<ForceGraph<Node, Link> | null>(null);
   const hoverRef = useRef<Node | null>(null);
+  // Set when new data arrives; consumed once the physics settles. Framing on a
+  // fixed timeout was a guess about how long the simulation takes, and on a
+  // slower load it fired before the nodes had positions and framed empty space.
+  const needsFrameRef = useRef(true);
+  const frameFnRef = useRef<() => void>(() => {});
   const neighbourRef = useRef<Set<string>>(new Set());
   const [ready, setReady] = useState(false);
 
@@ -249,6 +254,13 @@ export default function GraphCanvas({
       .onBackgroundClick(() => {
         onSelect(null);
         onLinkTap(null);
+      })
+      // The simulation tells us when it has settled. Framing then is the only
+      // way to be sure every node has a position to frame.
+      .onEngineStop(() => {
+        if (!needsFrameRef.current) return;
+        needsFrameRef.current = false;
+        frameFnRef.current();
       });
 
     setReady(true);
@@ -272,41 +284,44 @@ export default function GraphCanvas({
     return () => ro.disconnect();
   }, [ready]);
 
-  // Feed data, then frame the LARGEST CONNECTED COMPONENT rather than
-  // everything. Fitting the whole sparse cloud is what made the old graph
-  // render every node sub-pixel; the interesting structure is the big cluster.
+  // Feed data, then frame it once the engine settles.
+  //
+  // What to frame depends on what is on screen. Orphans hidden (the default)
+  // means everything visible IS the connected structure, so fit all of it — the
+  // brief's "not the whole sparse cloud" is already satisfied by the filter, and
+  // framing only the biggest component leaves the second cluster in the dark.
+  // Orphans shown: fall back to the largest component, or the cloud dominates
+  // and the structure shrinks into a corner again.
   useEffect(() => {
     const g = graphRef.current;
     if (!g || !ready) return;
-    g.graphData({ nodes: view.nodes as Node[], links: view.links as unknown as Link[] });
-    let clamp: ReturnType<typeof setTimeout> | null = null;
-    const t = setTimeout(() => {
-      // What to frame depends on what is on screen.
-      //
-      // Orphans hidden (the default): everything visible IS the connected
-      // structure, so fit all of it — the brief's "not the whole sparse cloud"
-      // is already satisfied by the filter, and framing only the biggest
-      // component would leave the second cluster off in the dark.
-      //
-      // Orphans shown: fall back to the largest component, or the cloud
-      // dominates and the structure shrinks into a corner again.
+
+    frameFnRef.current = () => {
       const framed = showOrphans
         ? new Set(view.nodes.filter((n) => n.component === 0).map((n) => n.id))
         : new Set(view.nodes.map((n) => n.id));
-      if (framed.size > 1) {
-        g.zoomToFit(600, 60, (n) => framed.has((n as Node).id));
-      } else {
-        g.zoomToFit(600, 60);
-      }
-      // Clamp once the fit animation has landed.
-      clamp = setTimeout(() => {
-        if (g.zoom() > MAX_INITIAL_ZOOM) g.zoom(MAX_INITIAL_ZOOM, 300);
-      }, 700);
-    }, 700);
-    return () => {
-      clearTimeout(t);
-      if (clamp) clearTimeout(clamp);
+      if (framed.size > 1) g.zoomToFit(400, 60, (n) => framed.has((n as Node).id));
+      else g.zoomToFit(400, 60);
+      // Clamp after the fit animation lands. zoomToFit does what it says: with
+      // a three-node cluster in a phone-width viewport it reaches ~10x, and
+      // nodes drawn in world coordinates arrive as dinner plates.
+      setTimeout(() => {
+        if (g.zoom() > MAX_INITIAL_ZOOM) g.zoom(MAX_INITIAL_ZOOM, 250);
+      }, 450);
     };
+
+    needsFrameRef.current = true;
+    g.graphData({ nodes: view.nodes as Node[], links: view.links as unknown as Link[] });
+
+    // Backstop: if the engine was already cold when the data arrived,
+    // onEngineStop may never fire again. Frame anyway rather than leave the
+    // owner looking at empty space.
+    const backstop = setTimeout(() => {
+      if (!needsFrameRef.current) return;
+      needsFrameRef.current = false;
+      frameFnRef.current();
+    }, 1500);
+    return () => clearTimeout(backstop);
   }, [view, ready, showOrphans]);
 
   // Search flies to the first match (brief: "search box = fly-to-node").
