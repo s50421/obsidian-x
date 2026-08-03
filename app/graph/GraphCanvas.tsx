@@ -58,6 +58,17 @@ const LINK_STYLE: Record<string, { color: string; width: number; dash?: number[]
   similar: { color: "rgba(255,255,255,0.16)", width: 1, dash: [3, 4] },
 };
 
+/**
+ * Ceiling on the OPENING zoom.
+ *
+ * zoomToFit does what it says — with a 3-node cluster in a 400px-wide viewport
+ * it happily zooms to 10x, and since nodes are drawn in world coordinates they
+ * arrive as dinner plates with their labels pushed off-screen. Framing the
+ * largest component is right; framing it at any magnification is not. Panning
+ * and pinching past this afterwards is unrestricted.
+ */
+const MAX_INITIAL_ZOOM = 1.8;
+
 const nodeColor = (n: Node) =>
   n.kind === "entity" ? ENTITY_COLOR : (TYPE_COLORS[n.sub] ?? TYPE_COLORS.note);
 
@@ -268,6 +279,7 @@ export default function GraphCanvas({
     const g = graphRef.current;
     if (!g || !ready) return;
     g.graphData({ nodes: view.nodes as Node[], links: view.links as unknown as Link[] });
+    let clamp: ReturnType<typeof setTimeout> | null = null;
     const t = setTimeout(() => {
       const inBiggest = new Set(
         view.nodes.filter((n) => n.component === 0).map((n) => n.id)
@@ -279,8 +291,15 @@ export default function GraphCanvas({
       } else {
         g.zoomToFit(600, 70);
       }
+      // Clamp once the fit animation has landed.
+      clamp = setTimeout(() => {
+        if (g.zoom() > MAX_INITIAL_ZOOM) g.zoom(MAX_INITIAL_ZOOM, 300);
+      }, 700);
     }, 700);
-    return () => clearTimeout(t);
+    return () => {
+      clearTimeout(t);
+      if (clamp) clearTimeout(clamp);
+    };
   }, [view, ready]);
 
   // Search flies to the first match (brief: "search box = fly-to-node").
