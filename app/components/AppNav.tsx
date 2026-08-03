@@ -44,6 +44,7 @@ const PRIMARY: NavLink[] = [
 
 // Secondary surfaces — reachable, never in the way.
 const SECONDARY: { href: string; label: string; hint: string }[] = [
+  { href: "/library", label: "Library", hint: "every memory, by type" },
   { href: "/connections", label: "Connections", hint: "link your memories" },
   { href: "/drafts", label: "Drafts", hint: "replies to copy" },
   { href: "/imports", label: "Imports", hint: "legacy backlog" },

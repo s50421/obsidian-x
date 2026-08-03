@@ -182,11 +182,14 @@ export default function GraphView({ data }: { data: GraphPayload }) {
             </div>
             <div className="mt-1 text-[14px] font-semibold leading-snug text-ink">{selected.label}</div>
             {selected.kind === "item" && (
+              // The item's OWN page, not the deck. The deck is a daily review
+              // sweep — sending someone there to look one thing up made no
+              // sense, as the owner pointed out.
               <Link
-                href="/deck"
+                href={`/item/${selected.id}`}
                 className="mt-1.5 inline-block text-[13px] font-medium text-accent-text hover:underline"
               >
-                Open in the deck →
+                Open this memory →
               </Link>
             )}
           </div>

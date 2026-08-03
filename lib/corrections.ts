@@ -91,6 +91,16 @@ export function categorize(row: AuditRow): { category: CorrectionCategory; examp
   if (isBulkImportCleanup(d)) return null;
 
   switch (row.action) {
+    // The item page writes this, with the BEFORE values, so a title fix and a
+    // type fix are told apart rather than lumped together as "an edit".
+    case "item_edited": {
+      const fields = Array.isArray(d.fields) ? (d.fields as string[]) : [];
+      const title = asText(d.title);
+      if (fields.includes("type")) return { category: "type", example: title };
+      if (fields.includes("tags")) return { category: "tags", example: title };
+      if (fields.includes("title")) return { category: "title", example: title };
+      return null; // a body or status edit is not a classification mistake
+    }
     case "deck_edit": {
       // The deck writes what actually changed; prefer the specific field.
       const fields = Array.isArray(d.fields) ? (d.fields as string[]) : [];
