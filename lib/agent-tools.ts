@@ -1,7 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { ToolSchema } from "@/lib/openrouter";
-import { answerQuestion } from "@/lib/ask-core";
 import { draftForTask } from "@/lib/draft";
+import { embedText } from "@/lib/embed";
 import { fetchUpcomingEvents } from "@/lib/calendar";
 import { loadSourceStatus, healthOf } from "@/lib/source-status";
 import { clickupConfigured, getClickUpTaskStatus, isClickUpDone } from "@/lib/clickup";
@@ -89,11 +89,36 @@ const memory_search: AgentTool = {
   async run(ctx, args) {
     const query = str(args.query);
     if (!query) return { error: "query required" };
-    const { answer, sources } = await answerQuestion(ctx.userId, query);
+
+    // RETRIEVAL ONLY — no nested answer generation.
+    //
+    // This used to call answerQuestion(), which runs its OWN Sonnet call to
+    // write prose. Inside a loop that already has a model, that is paying twice
+    // to say the same thing: a single turn made four memory_search calls and
+    // cost $0.046 against a $0.02 budget. The agent wants raw material, not a
+    // second opinion.
+    const qEmbedding = await embedText(query, ctx.userId);
+    const { data, error } = await ctx.admin.rpc("match_items_v2", {
+      query_embedding: qEmbedding,
+      query_text: query,
+      match_count: 6,
+      owner: ctx.userId,
+    });
+    if (error) return { error: `retrieval failed: ${error.message}` };
+
+    const rows = (data ?? []) as Record<string, unknown>[];
     return {
-      answer,
-      sources: sources.slice(0, 5).map((s) => ({ n: s.n, title: s.title })),
-      note: "This is a TEXT search. It cannot see ClickUp links, status or due dates.",
+      hits: rows.map((m) => ({
+        id: m.id,
+        title: m.title,
+        type: m.type,
+        status: m.status,
+        excerpt: m.sensitive
+          ? "(sensitive — body withheld)"
+          : str(m.body).replace(/\s+/g, " ").slice(0, 300),
+      })),
+      count: rows.length,
+      note: "TEXT search only — it cannot see ClickUp links, status or due dates. Use clickup_status or list_tasks for those.",
     };
   },
 };
@@ -389,16 +414,19 @@ const calendar_tool: AgentTool = {
   },
   async run(ctx, args) {
     const events = await fetchUpcomingEvents(Math.min(24 * 14, num(args.hours, 24)));
+    // Trimmed hard. Tool RESULTS are the part of the prompt that cannot be
+    // cached, so a fat payload is paid for in full on the next step — 25 events
+    // with ISO timestamps and calendar names pushed one turn to $0.0214 against
+    // a $0.02 budget on its own.
     return {
-      events: events.slice(0, 25).map((e) => ({
+      events: events.slice(0, 12).map((e) => ({
         summary: e.summary,
-        start: e.start.toISOString(),
-        end: e.end?.toISOString() ?? null,
-        allDay: e.allDay,
-        calendar: e.calendar,
-        location: e.location ?? null,
+        start: e.start.toISOString().slice(0, 16).replace("T", " "),
+        allDay: e.allDay || undefined,
+        location: e.location || undefined,
       })),
       count: events.length,
+      truncated: events.length > 12 ? events.length - 12 : undefined,
     };
   },
 };

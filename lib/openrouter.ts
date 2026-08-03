@@ -18,6 +18,8 @@ export type Usage = {
   completion_tokens: number | null;
   total_tokens: number | null;
   cost_usd: number | null;
+  /** Prompt tokens served from cache. Only set when caching is in play. */
+  cached_tokens?: number | null;
 };
 
 export type ChatResult = { content: string; usage: Usage };
@@ -140,6 +142,15 @@ export async function chatWithTools(
       messages,
       tools,
       tool_choice: "auto",
+      // PROMPT CACHING, and it is not optional at these sizes.
+      //
+      // A tool loop re-sends the system prompt and all 13 tool schemas on EVERY
+      // step. Measured before this: a 3-step turn cost $0.0355 against a $0.02
+      // budget, almost all of it re-reading the same input. OpenRouter's
+      // automatic mode puts the breakpoint on the last cacheable block and
+      // advances it as the conversation grows, which is exactly the shape of a
+      // loop; cache reads bill at 0.1x input.
+      cache_control: { type: "ephemeral" },
       temperature: opts.temperature ?? 0.2,
       max_tokens: opts.maxTokens ?? 1200,
       usage: { include: true },
@@ -169,6 +180,10 @@ export async function chatWithTools(
       completion_tokens: typeof u.completion_tokens === "number" ? u.completion_tokens : null,
       total_tokens: typeof u.total_tokens === "number" ? u.total_tokens : null,
       cost_usd: typeof u.cost === "number" ? u.cost : null,
+      cached_tokens:
+        typeof u?.prompt_tokens_details?.cached_tokens === "number"
+          ? u.prompt_tokens_details.cached_tokens
+          : null,
     },
   };
 }

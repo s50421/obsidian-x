@@ -74,6 +74,11 @@ function systemPrompt(tz: string, todayISO: string): string {
     "2. PROPOSE, THEN APPROVE. Destructive or outward-facing actions go through the approval flow.",
     "   clickup_create already respects his trust dial — do not try to work around it.",
     "",
+    "BE DECISIVE. Call the fewest tools that answer the question, then answer. Do not re-run a",
+    "search with a reworded query hoping for a better result — if the structured tools say a thing",
+    "is not there, it is not there, and saying so is the correct answer. Every extra step costs the",
+    "owner money and makes him wait.",
+    "",
     "Be honest when a tool fails or returns nothing. A wrong confident answer is the worst outcome;",
     "'I couldn't check ClickUp just now' is a fine thing to say.",
   ].join("\n");
@@ -118,6 +123,10 @@ export async function runAgent(
   ];
 
   const schemas = toolSchemas(AGENT_TOOLS);
+  // Deterministic repeat guard. Prompting alone did not stop the model calling
+  // memory_search four times in one turn with reworded queries; this makes the
+  // second identical call free and tells it plainly to move on.
+  const called = new Map<string, string>();
   const usage: Usage[] = [];
   const toolsUsed: string[] = [];
   const touched = new Set<string>(opts.recentItemIds ?? []);
@@ -154,7 +163,17 @@ export async function runAgent(
       toolsUsed.push(call.function.name);
 
       const args = toolArgs(call);
-      const result = await runTool(ctx, call.function.name, args);
+      const signature = `${call.function.name}:${JSON.stringify(args)}`;
+      let result: Awaited<ReturnType<typeof runTool>>;
+      if (called.has(signature)) {
+        result = {
+          error: "You already called this exact tool with these arguments in this turn.",
+          hint: "Use the earlier result and answer now. Do not re-search.",
+        };
+      } else {
+        result = await runTool(ctx, call.function.name, args);
+        called.set(signature, "done");
+      }
 
       // Any item the loop sees becomes part of the conversation's referents, so
       // a later "add those to ClickUp" resolves without another search.
