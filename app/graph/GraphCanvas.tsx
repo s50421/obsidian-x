@@ -276,6 +276,12 @@ export default function GraphCanvas({
       // the only one that matters (see the staggered passes below).
       .onEngineStop(() => frameFnRef.current());
 
+    // Debug handle. This canvas cannot be inspected from the outside — a blank
+    // graph looks identical whether the data is missing, the nodes are
+    // unpositioned, or the camera is parked off-screen, and each of those was
+    // guessed at in turn before this existed. Read-only, single-user app.
+    (window as unknown as { __obxGraph?: unknown }).__obxGraph = g;
+
     setReady(true);
     return () => {
       g._destructor?.();
