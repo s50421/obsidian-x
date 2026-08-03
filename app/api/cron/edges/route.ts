@@ -4,6 +4,7 @@ import { ownerEmail } from "@/lib/owner";
 import { isCronAuthorized } from "@/lib/cron";
 import { logAudit } from "@/lib/audit";
 import { rebuildEdges } from "@/lib/edges";
+import { refitModel } from "@/lib/link-model";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -42,12 +43,24 @@ export async function GET(req: Request) {
     return NextResponse.json({ dry: true, currentEdges: count ?? 0 });
   }
 
+  // Refit BEFORE rebuilding, so tonight's suggestions are scored with
+  // everything the owner decided today.
+  const model = await refitModel(admin, owner.id);
   const res = await rebuildEdges(admin, owner.id, { includeSimilar });
   await logAudit(admin, {
     user_id: owner.id,
     action: "edges_rebuilt",
     actor: "system",
-    detail: { ...res },
+    detail: { ...res, model: { trained: model.trained, labels: model.labels } },
   });
-  return NextResponse.json({ ok: true, ...res });
+  return NextResponse.json({
+    ok: true,
+    ...res,
+    model: {
+      trained: model.trained,
+      labels: model.labels,
+      positives: model.positives,
+      accuracy: model.accuracy,
+    },
+  });
 }

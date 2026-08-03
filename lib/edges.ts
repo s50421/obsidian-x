@@ -1,4 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { extractFeatures, type FeatureItem } from "@/lib/link-features";
+import { explainScore, loadModel, scoreLink, type Weights } from "@/lib/link-model";
 
 // Obsidian-X — typed, explainable connections (brain-quality brief, Phase 2).
 //
@@ -45,6 +47,14 @@ export type Edge = {
   weight: number;
   entity_id: string | null;
   discovery: boolean;
+  /**
+   * The feature vector this pair was scored on (see lib/link-features.ts).
+   *
+   * Stored with the SUGGESTION, not computed later: the owner's verdict is
+   * about the pair as it looked when offered, and re-deriving features after an
+   * item has been edited would silently relabel the training data.
+   */
+  features?: Record<string, number>;
   /**
    * The Obsidian model (see migration 0013). A `confirmed` edge is drawn; a
    * `suggested` one is only offered. Similarity is a suggestion, never a fact.
@@ -356,7 +366,9 @@ export function deriveReferenceEdges(
 export async function deriveSimilarSuggestions(
   admin: SupabaseClient,
   userId: string,
-  items: { id: string; title: string }[]
+  items: { id: string; title: string }[],
+  /** Feature context, so every suggestion is stored with what it was judged on. */
+  ctx?: { features: Map<string, FeatureItem>; weights: Weights }
 ): Promise<Edge[]> {
   const titleById = new Map(items.map((i) => [i.id, i.title]));
 
@@ -393,18 +405,27 @@ export async function deriveSimilarSuggestions(
       if (!(nearest.get(n.id) ?? []).some((m) => m.id === id)) continue;
       const [src, dst] = orderPair(id, n.id);
       if (src === dst) continue;
+
+      const a = ctx?.features.get(src);
+      const b = ctx?.features.get(dst);
+      const feats = a && b ? extractFeatures(a, b, n.similarity) : null;
+      // The learned (or prior) weights decide how it READS, while mutual rank
+      // still decides what gets offered at all. Keeping those separate is what
+      // stops a wobbly early model from silencing real suggestions.
+      const reason = feats && ctx
+        ? `${explainScore(feats, ctx.weights)} (${Math.round(n.similarity * 100)}% match) — not a stated connection`
+        : `reads similarly (${Math.round(n.similarity * 100)}% match) — not a stated connection`;
+
       out.push({
         src,
         dst,
         kind: "similar",
-        // The other item's title is already shown next to this line, so naming
-        // it again read as stutter. Say what the system actually knows: how
-        // close, and that closeness is all it knows.
-        reason: `reads similarly (${Math.round(n.similarity * 100)}% match) — not a stated connection`,
-        weight: n.similarity,
+        reason,
+        weight: feats && ctx ? scoreLink(feats, ctx.weights) : n.similarity,
         entity_id: null,
         discovery: true,
         status: "suggested",
+        features: feats ? (feats as unknown as Record<string, number>) : undefined,
       });
     }
   }
@@ -486,7 +507,7 @@ export async function rebuildEdges(
 }> {
   const { data: allItems } = await admin
     .from("items")
-    .select("id,title,body,tags,source,due_at,external")
+    .select("id,title,body,tags,source,due_at,external,type,created_at")
     .eq("user_id", userId)
     .neq("status", "archived")
     .is("valid_to", null)
@@ -544,6 +565,35 @@ export async function rebuildEdges(
   }
 
   const taskItems = items as unknown as TaskItem[];
+
+  // Feature context for the learning loop. Built once here so every suggestion
+  // records exactly what it was judged on (owner decision 2026-08-02: collect
+  // the dataset now, decide about fitting later).
+  const entityIdsByItem = new Map<string, Set<string>>();
+  for (const l of liveLinks) {
+    const set = entityIdsByItem.get(l.item_id) ?? new Set<string>();
+    set.add(l.entity_id);
+    entityIdsByItem.set(l.item_id, set);
+  }
+  const featureCtx = {
+    features: new Map<string, FeatureItem>(
+      items.map((i) => [
+        i.id,
+        {
+          id: i.id,
+          title: i.title,
+          body: i.body,
+          type: (i as unknown as { type?: string }).type ?? "note",
+          tags: i.tags,
+          due_at: (i as unknown as { due_at?: string | null }).due_at ?? null,
+          created_at: (i as unknown as { created_at?: string }).created_at ?? new Date(0).toISOString(),
+          external: (i as unknown as { external?: TaskItem["external"] }).external ?? null,
+          entityIds: entityIdsByItem.get(i.id) ?? new Set<string>(),
+        } as FeatureItem,
+      ])
+    ),
+    weights: (await loadModel(admin, userId)).weights,
+  };
   const derived = [
     ...deriveEntityEdges((entities ?? []) as EntityRow[], liveLinks),
     ...deriveTopicEdges(),
@@ -551,7 +601,7 @@ export async function rebuildEdges(
     ...deriveSameTaskEdges(taskItems),
     ...deriveSameDueDateEdges(taskItems),
     ...deriveReferenceEdges(items.map((i) => ({ id: i.id, title: i.title, body: i.body }))),
-    ...(opts.includeSimilar ? await deriveSimilarSuggestions(admin, userId, items) : []),
+    ...(opts.includeSimilar ? await deriveSimilarSuggestions(admin, userId, items, featureCtx) : []),
   ];
 
   const final = dedupeEdges([...derived, ...((manual ?? []) as unknown as Edge[])])

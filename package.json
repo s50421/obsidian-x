@@ -15,7 +15,7 @@
     "test:v42": "node --experimental-strip-types --no-warnings scripts/test-letter.mjs && node --experimental-strip-types --no-warnings scripts/test-brief-window.mjs && node --experimental-strip-types --no-warnings scripts/test-conversation.mjs && node --experimental-strip-types --no-warnings scripts/test-projection.mjs",
     "letter:sample": "node --experimental-strip-types --no-warnings scripts/test-letter.mjs --sample",
     "test:sec": "node --experimental-strip-types --no-warnings scripts/test-secure-compare.mjs && node --experimental-strip-types --no-warnings scripts/test-redact.mjs",
-    "test:brain": "node --experimental-strip-types --no-warnings scripts/test-edges.mjs && node --experimental-strip-types --no-warnings scripts/test-graph-data.mjs"
+    "test:brain": "node --experimental-strip-types --no-warnings scripts/test-edges.mjs && node --experimental-strip-types --no-warnings scripts/test-graph-data.mjs && node --experimental-strip-types --no-warnings scripts/test-link-model.mjs"
   },
   "dependencies": {
     "@octokit/rest": "^22.0.1",
