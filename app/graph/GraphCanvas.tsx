@@ -112,10 +112,9 @@ export default function GraphCanvas({
   const holder = useRef<HTMLDivElement>(null);
   const graphRef = useRef<ForceGraph<Node, Link> | null>(null);
   const hoverRef = useRef<Node | null>(null);
-  // Set when new data arrives; consumed once the physics settles. Framing on a
-  // fixed timeout was a guess about how long the simulation takes, and on a
-  // slower load it fired before the nodes had positions and framed empty space.
-  const needsFrameRef = useRef(true);
+  // Framing is done through a ref so every trigger — engine stop, resize, the
+  // staggered passes after new data — runs the SAME up-to-date function. It is
+  // idempotent by design.
   const frameFnRef = useRef<() => void>(() => {});
   const neighbourRef = useRef<Set<string>>(new Set());
   const [ready, setReady] = useState(false);
@@ -154,7 +153,7 @@ export default function GraphCanvas({
       .nodeRelSize(1)
       .linkSource("source")
       .linkTarget("target")
-      .cooldownTicks(120)
+      .cooldownTicks(90)
       .d3AlphaDecay(0.03)
       .d3VelocityDecay(0.35)
       .nodeCanvasObject((node, ctx, scale) => {
@@ -273,11 +272,9 @@ export default function GraphCanvas({
       })
       // The simulation tells us when it has settled. Framing then is the only
       // way to be sure every node has a position to frame.
-      .onEngineStop(() => {
-        if (!needsFrameRef.current) return;
-        needsFrameRef.current = false;
-        frameFnRef.current();
-      });
+      // The simulation settling is the best single moment to frame — but not
+      // the only one that matters (see the staggered passes below).
+      .onEngineStop(() => frameFnRef.current());
 
     setReady(true);
     return () => {
@@ -340,18 +337,19 @@ export default function GraphCanvas({
       }, 450);
     };
 
-    needsFrameRef.current = true;
     g.graphData({ nodes: view.nodes as Node[], links: view.links as unknown as Link[] });
 
-    // Backstop: if the engine was already cold when the data arrived,
-    // onEngineStop may never fire again. Frame anyway rather than leave the
-    // owner looking at empty space.
-    const backstop = setTimeout(() => {
-      if (!needsFrameRef.current) return;
-      needsFrameRef.current = false;
-      frameFnRef.current();
-    }, 1500);
-    return () => clearTimeout(backstop);
+    // Frame REPEATEDLY over the first couple of seconds rather than once at a
+    // moment we have to predict correctly.
+    //
+    // Three things race here: the ResizeObserver settling the canvas size, this
+    // effect handing over the data, and the simulation reaching a stop. Any
+    // single trigger works when they happen to land in the right order and
+    // leaves the owner staring at an empty canvas when they do not — which is
+    // exactly what kept happening. Framing is idempotent and costs nothing, so
+    // the honest fix is to stop trying to pick the moment.
+    const passes = [250, 900, 1800, 3000].map((ms) => setTimeout(() => frameFnRef.current(), ms));
+    return () => passes.forEach(clearTimeout);
   }, [view, ready, showOrphans]);
 
   // Search flies to the first match (brief: "search box = fly-to-node").
