@@ -281,15 +281,22 @@ export default function GraphCanvas({
     g.graphData({ nodes: view.nodes as Node[], links: view.links as unknown as Link[] });
     let clamp: ReturnType<typeof setTimeout> | null = null;
     const t = setTimeout(() => {
-      const inBiggest = new Set(
-        view.nodes.filter((n) => n.component === 0).map((n) => n.id)
-      );
-      // zoomToFit's filter runs per node; falling back to everything when the
-      // biggest component is a single node avoids zooming to infinity.
-      if (inBiggest.size > 1) {
-        g.zoomToFit(600, 70, (n) => inBiggest.has((n as Node).id));
+      // What to frame depends on what is on screen.
+      //
+      // Orphans hidden (the default): everything visible IS the connected
+      // structure, so fit all of it — the brief's "not the whole sparse cloud"
+      // is already satisfied by the filter, and framing only the biggest
+      // component would leave the second cluster off in the dark.
+      //
+      // Orphans shown: fall back to the largest component, or the cloud
+      // dominates and the structure shrinks into a corner again.
+      const framed = showOrphans
+        ? new Set(view.nodes.filter((n) => n.component === 0).map((n) => n.id))
+        : new Set(view.nodes.map((n) => n.id));
+      if (framed.size > 1) {
+        g.zoomToFit(600, 60, (n) => framed.has((n as Node).id));
       } else {
-        g.zoomToFit(600, 70);
+        g.zoomToFit(600, 60);
       }
       // Clamp once the fit animation has landed.
       clamp = setTimeout(() => {
@@ -300,7 +307,7 @@ export default function GraphCanvas({
       clearTimeout(t);
       if (clamp) clearTimeout(clamp);
     };
-  }, [view, ready]);
+  }, [view, ready, showOrphans]);
 
   // Search flies to the first match (brief: "search box = fly-to-node").
   useEffect(() => {
