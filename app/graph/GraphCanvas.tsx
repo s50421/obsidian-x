@@ -288,16 +288,30 @@ export default function GraphCanvas({
   }, []);
 
   // Keep the canvas sized to its container — force-graph needs explicit pixels.
+  //
+  // AND re-frame afterwards. A fit is a function of the viewport, so one
+  // computed before the canvas reached its final size is simply wrong: on load
+  // the graph was framed against a placeholder size and the ResizeObserver then
+  // moved the goalposts, leaving the nodes off-screen and the canvas looking
+  // empty. This is worse on a phone, where layout settles latest.
   useEffect(() => {
     if (!ready || !holder.current) return;
     const el = holder.current;
+    let debounce: ReturnType<typeof setTimeout> | null = null;
     const resize = () => {
-      graphRef.current?.width(el.clientWidth).height(el.clientHeight);
+      const g = graphRef.current;
+      if (!g) return;
+      g.width(el.clientWidth).height(el.clientHeight);
+      if (debounce) clearTimeout(debounce);
+      debounce = setTimeout(() => frameFnRef.current(), 120);
     };
     resize();
     const ro = new ResizeObserver(resize);
     ro.observe(el);
-    return () => ro.disconnect();
+    return () => {
+      ro.disconnect();
+      if (debounce) clearTimeout(debounce);
+    };
   }, [ready]);
 
   // Feed data, then frame it once the engine settles.
