@@ -164,3 +164,31 @@ test("the splitter is told that a to-do's unit is the ACTION, not the topic", ()
   assert.match(SPLIT_RULES, /Call Nate Massi/, "the real transcript is the few-shot");
   assert.match(SPLIT_RULES, /Same person, same action/, "and the opposite case is pinned too");
 });
+
+// --- an empty reply must never be reported as an answer ------------------------
+
+test("parallel split parts share a type", () => {
+  // Live 2026-08-03: three to-dos came back as task / memory / task, so "Call
+  // Nate Massi" silently became a memory and needed converting by hand. A
+  // dictated past tense ("called Nate") is a transcription artefact, not a
+  // record of something that happened.
+  assert.match(SPLIT_RULES, /PARALLEL PARTS GET THE SAME TYPE/);
+  assert.match(SPLIT_RULES, /TRANSCRIPTION artefact/);
+});
+
+test("the loop never claims confusion about work it actually did", async () => {
+  // Live 2026-08-03 22:33: the model called a tool then returned an empty
+  // message. The loop treated that as done and sent "I'm not sure what to do
+  // with that" — while the owner's instruction was silently dropped.
+  const src = await import("node:fs").then((fs) =>
+    fs.readFileSync(new URL("../lib/agent.ts", import.meta.url), "utf8")
+  );
+  assert.match(src, /AN EMPTY REPLY IS NOT AN ANSWER/);
+  assert.match(src, /emptyReplies/, "an empty turn must be retried, not accepted");
+  // And the give-up text must reference what was done rather than feign confusion.
+  assert.match(src, /I did some of that/);
+  assert.ok(
+    !/reply: turn\.content\.trim\(\) \|\| "I'm not sure/.test(src),
+    "the old swallow-the-instruction fallback must be gone"
+  );
+});

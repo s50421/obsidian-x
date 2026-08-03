@@ -242,6 +242,11 @@ async function runAgentTurn(admin: SupabaseClient, userId: string, text: string)
         tools: result.toolsUsed,
         cost_usd: totals.cost_usd,
         timedOut: result.timedOut,
+        // Cache hit rate, because cost cannot be diagnosed without it: an
+        // expensive turn is either doing more work or re-reading a prompt it
+        // should have cached, and those need different fixes.
+        prompt_tokens: totals.prompt_tokens,
+        cached_tokens: result.usage.reduce((n, u) => n + (u.cached_tokens ?? 0), 0),
       },
     });
 

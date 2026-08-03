@@ -132,6 +132,7 @@ export async function runAgent(
   const touched = new Set<string>(opts.recentItemIds ?? []);
   let steps = 0;
   let timedOut = false;
+  let emptyReplies = 0;
 
   while (steps < MAX_STEPS) {
     if (Date.now() - started > BUDGET_MS) {
@@ -143,14 +144,36 @@ export async function runAgent(
     usage.push(turn.usage);
 
     if (!turn.toolCalls.length) {
-      return {
-        reply: turn.content.trim() || "I'm not sure what to do with that.",
-        steps,
-        toolsUsed,
-        touchedItemIds: [...touched],
-        usage,
-        timedOut: false,
-      };
+      const text = turn.content.trim();
+      if (text) {
+        return { reply: text, steps, toolsUsed, touchedItemIds: [...touched], usage, timedOut: false };
+      }
+
+      // AN EMPTY REPLY IS NOT AN ANSWER, and it must never be reported as one.
+      //
+      // Observed live 2026-08-03 22:33: the model called
+      // recent_conversation_items, then returned an empty message with no
+      // further tool calls. The loop took that as "done" and sent the fallback
+      // "I'm not sure what to do with that" — while the owner's actual
+      // instruction ("convert Nate's call to a task, both calls this week")
+      // was silently dropped. He only got it done because he happened to ask a
+      // follow-up. Losing an instruction quietly is the worst failure this
+      // thing can have.
+      //
+      // So: nudge once and let it continue. It still has its tools, so it can
+      // finish the job rather than being forced to summarise half of it.
+      if (emptyReplies < 1) {
+        emptyReplies += 1;
+        messages.push({ role: "assistant", content: null, tool_calls: [] });
+        messages.push({
+          role: "user",
+          content:
+            "You returned an empty message. Either call the tools you still need, or answer now — " +
+            "and if you already did something, say what you did.",
+        });
+        continue;
+      }
+      break; // fall through to the summarise-what-happened path below
     }
 
     // The assistant message carrying the tool calls MUST be appended before the
@@ -188,8 +211,10 @@ export async function runAgent(
     }
   }
 
-  // Out of steps or out of time. Ask for a final answer with tools disabled, so
-  // the owner gets what was actually found rather than silence.
+  // Out of steps, out of time, or the model went quiet twice. Ask for a final
+  // answer with tools disabled, so the owner gets what was actually found
+  // rather than silence — or worse, a fallback claiming confusion about work
+  // that was in fact done.
   try {
     const final = await chatWithTools(
       model,
@@ -207,7 +232,11 @@ export async function runAgent(
     );
     usage.push(final.usage);
     return {
-      reply: final.content.trim() || "I ran out of time on that one — try asking again?",
+      reply:
+        final.content.trim() ||
+        (steps > 0
+          ? `I did some of that (${toolsUsed.join(", ")}) but couldn't summarise it — ask me what changed.`
+          : "I didn't catch that — say it again?"),
       steps,
       toolsUsed,
       touchedItemIds: [...touched],
@@ -216,7 +245,10 @@ export async function runAgent(
     };
   } catch {
     return {
-      reply: "That took longer than I allow myself. Ask again and I'll pick it up.",
+      reply:
+        steps > 0
+          ? `That took longer than I allow myself. I did run: ${toolsUsed.join(", ")} — ask me what changed.`
+          : "That took longer than I allow myself. Ask again and I'll pick it up.",
       steps,
       toolsUsed,
       touchedItemIds: [...touched],
