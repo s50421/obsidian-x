@@ -6,7 +6,11 @@ export type AuditEntry = {
   user_id: string;
   item_id?: string | null;
   action: string; // capture | email_capture | review_approve | review_merge | review_delete | supersede | ...
-  actor?: "user" | "system" | "email" | "worker";
+  // "agent" is its own actor (v4.2.3). An action the tool loop took on the
+  // owner's behalf must be distinguishable from one he took himself — that
+  // distinction is what the propose-then-approve law is enforced against, and
+  // v4.3's MCP agents will use the same value.
+  actor?: "user" | "system" | "email" | "worker" | "agent";
   detail?: Record<string, unknown>;
 };
 

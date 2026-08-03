@@ -3,18 +3,16 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { ownerEmail } from "@/lib/owner";
 import { captureText } from "@/lib/capture-core";
-import { answerQuestion } from "@/lib/ask-core";
-import { interpretIntent } from "@/lib/intent";
-import { embedText } from "@/lib/embed";
+import { classifyTurn } from "@/lib/intent";
+import { runAgent } from "@/lib/agent";
 import { deleteVaultNote } from "@/lib/vault";
 import { reprojectItemToVault } from "@/lib/vault-sync";
 import { applyProposal, proposeClickUpTaskForItem, rejectProposalById } from "@/lib/proposals";
-import { clickupConfigured } from "@/lib/clickup";
 import { projectNewCaptures } from "@/lib/task-projection";
 import { logAudit } from "@/lib/audit";
 import { secureEquals } from "@/lib/secure-compare";
 import { reportSourceStatus } from "@/lib/source-status";
-import { JUNK_ARCHIVE_SCORE, UNTITLED_TITLE } from "@/lib/title-standard.mjs";
+import { JUNK_ARCHIVE_SCORE } from "@/lib/title-standard.mjs";
 import { senderName, type InflowRow as LetterInflowRow } from "@/lib/letter";
 import { generateDraft, loadDrafts } from "@/lib/letter-drafts";
 import { logLlmUsage } from "@/lib/usage";
@@ -26,18 +24,15 @@ import {
   sendChatAction,
 } from "@/lib/telegram";
 import { transcribeAudio } from "@/lib/transcribe";
-import { explainStory, getDailyBriefing } from "@/lib/news";
 import {
   loadRecentTurns,
   recordTurn,
-  renderContext,
-  lastPendingCapture,
   pruneConversation,
+  AGENT_CONTEXT_TURNS,
 } from "@/lib/conversation";
 import {
   resolveOwnerTz,
   isValidIanaTimeZone,
-  localDateStr,
   getSettingValue,
   setSettingValue,
   describeSixThirty,
@@ -172,60 +167,118 @@ async function handleMessage(
     return;
   }
 
-  const today = new Date().toISOString().slice(0, 10);
-
   // v4.2.1 — the bot is a conversation now. Recent turns go to the intent
   // model so a follow-up ("save them separately") resolves against what was
   // just said instead of being treated as a brand-new note.
   const turns = await loadRecentTurns(admin, userId);
   await recordTurn(admin, userId, "user", text, voiceMeta);
 
-  const intent = await interpretIntent(text, today, renderContext(turns));
-  await logLlmUsage(admin, userId, "intent", intent.usage);
+  // v4.2.3 — the router is gone. One binary decision remains: is this a pure
+  // CAPTURE, or a CONVERSATION? Captures keep the cheap classify/split path;
+  // everything else goes to the agent loop, which can gather what it needs
+  // before answering instead of guessing a single handler.
+  const { kind, usage: kindUsage } = await classifyTurn(text, turns.length > 0);
+  if (kindUsage) await logLlmUsage(admin, userId, "intent", kindUsage);
 
-  switch (intent.intent) {
-    case "refine":
-      // The owner's RAW words, deliberately not `intent.target`. The router's
-      // paraphrase is lossy in a way that actually changes the outcome:
-      // "Save them as two separate things" reads as an INSTRUCTION and splits
-      // correctly, while its own rewrite ("save stage phone call and resume as
-      // two separate tasks") reads as a DESCRIPTION of one task and comes back
-      // as a single item. Measured, twice each. When the owner states how they
-      // want something filed, use what they actually said.
-      await handleRefine(admin, userId, text);
-      break;
-    case "complete_all":
-      await promptBulkDone(admin, userId); // risky -> Yes/No
-      break;
-    case "complete":
-      await handleComplete(admin, userId, intent.target || text);
-      break;
-    case "reopen":
-      await handleReopen(admin, userId, intent.target || text);
-      break;
-    case "ask":
-      await runAsk(admin, userId, intent.query || text);
-      break;
-    case "clickup":
-      await handleClickUp(admin, userId, intent.target || text, intent.context);
-      break;
-    case "news":
-      await runNewsDeepDive(admin, userId, intent.query || text);
-      break;
-    case "unknown":
-      // Didn't parse as a clear intent — if it reads like a timezone question,
-      // point at /tz instead of quietly filing it away as a note.
-      if (TIMEZONE_HINT_RE.test(text)) {
-        await sendTzHelp(admin, userId);
-        break;
-      }
-      await promptSave(admin, userId, text, intent.summary); // confirm before saving
-      break;
-    case "save":
-    default:
-      await promptSave(admin, userId, text, intent.summary); // confirm before saving
-      break;
+  if (kind === "capture") {
+    // /tz is the one real command, and it reads like a capture.
+    if (TIMEZONE_HINT_RE.test(text)) {
+      await sendTzHelp(admin, userId);
+      return;
+    }
+    await promptSave(admin, userId, text, "");
+    return;
   }
+
+  await runAgentTurn(admin, userId, text);
+}
+
+/**
+ * One conversational turn through the tool loop.
+ *
+ * Keeps a typing indicator alive throughout: Telegram's chat action expires
+ * after ~5s, and a loop doing three lookups can run 15-20s. Without the
+ * refresh the bot looks dead exactly when it is working hardest.
+ */
+async function runAgentTurn(admin: SupabaseClient, userId: string, text: string): Promise<void> {
+  const tz = await resolveOwnerTz(admin, userId).catch(
+    () => process.env.BRIEF_TZ || "America/Vancouver"
+  );
+  const turns = await loadRecentTurns(admin, userId, AGENT_CONTEXT_TURNS);
+
+  await sendChatAction("typing");
+  const keepTyping = setInterval(() => {
+    void sendChatAction("typing");
+  }, 4000);
+
+  try {
+    const recentItemIds = await recentConversationItemIds(admin, userId);
+    const result = await runAgent(admin, userId, text, {
+      tz,
+      turns,
+      recentItemIds,
+      onStep: () => void sendChatAction("typing"),
+    });
+
+    // Cost accounting for the WHOLE turn, op 'agent', with the step count — the
+    // brief's budget is <= $0.02 for a typical turn and /ops flags outliers.
+    const totals = result.usage.reduce(
+      (acc: { model: string | null; prompt_tokens: number; completion_tokens: number; total_tokens: number; cost_usd: number }, u) => ({
+        model: u.model ?? acc.model,
+        prompt_tokens: (acc.prompt_tokens ?? 0) + (u.prompt_tokens ?? 0),
+        completion_tokens: (acc.completion_tokens ?? 0) + (u.completion_tokens ?? 0),
+        total_tokens: (acc.total_tokens ?? 0) + (u.total_tokens ?? 0),
+        cost_usd: (acc.cost_usd ?? 0) + (u.cost_usd ?? 0),
+      }),
+      { model: null as string | null, prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, cost_usd: 0 }
+    );
+    await logLlmUsage(admin, userId, "agent", totals);
+    await logAudit(admin, {
+      user_id: userId,
+      action: "agent_turn",
+      actor: "agent",
+      detail: {
+        steps: result.steps,
+        tools: result.toolsUsed,
+        cost_usd: totals.cost_usd,
+        timedOut: result.timedOut,
+      },
+    });
+
+    const reply = stripMarkdown(result.reply);
+    await sendMessage(reply, { parse_mode: "plain" });
+    await recordTurn(admin, userId, "assistant", reply, {
+      // Item ids the loop touched are carried in conversation memory, so the
+      // NEXT turn can resolve "add those to ClickUp" without searching again.
+      itemIds: result.touchedItemIds,
+      tools: result.toolsUsed,
+    });
+    void pruneConversation(admin, userId);
+  } finally {
+    clearInterval(keepTyping);
+  }
+}
+
+/**
+ * Item ids mentioned earlier in this conversation.
+ *
+ * Read back out of conversation memory rather than recomputed, so a referent
+ * survives across turns — this is half of the fix for "are these in ClickUp?"
+ * being answered about the wrong thing.
+ */
+async function recentConversationItemIds(
+  admin: SupabaseClient,
+  userId: string
+): Promise<string[]> {
+  const turns = await loadRecentTurns(admin, userId, AGENT_CONTEXT_TURNS);
+  const ids = new Set<string>();
+  for (const t of turns) {
+    const meta = (t.meta ?? {}) as { itemIds?: unknown };
+    if (Array.isArray(meta.itemIds)) {
+      for (const id of meta.itemIds) if (typeof id === "string") ids.add(id);
+    }
+  }
+  return [...ids];
 }
 
 // ---- /tz command (v4.0 W4) ---------------------------------------------------
@@ -619,196 +672,7 @@ async function handleVoice(
 
 // ---- v4.2.1: follow-ups that adjust what just happened ---------------------------
 
-// "Save them as two separate things." / "No, make it a task." / "Actually due
-// Friday." These refer to the exchange immediately before, and used to be
-// answered with "I need more context" because every message was handled in
-// isolation.
-async function handleRefine(
-  admin: SupabaseClient,
-  userId: string,
-  instruction: string
-): Promise<void> {
-  const pending = await lastPendingCapture(admin, userId);
-
-  if (!pending) {
-    // Nothing to adjust — most likely the classifier over-reached, so fall
-    // back to treating it as a normal note rather than dropping it.
-    await promptSave(admin, userId, instruction, "");
-    return;
-  }
-
-  // Re-run the capture with the owner's instruction overriding the model's own
-  // filing judgement, and retire the superseded proposal so there's only ever
-  // one pending offer for the same text.
-  void sendChatAction("typing");
-  await rejectCaptureProposalById(admin, userId, pending.id);
-
-  const outcome = await captureText(userId, pending.text, "telegram", instruction);
-  void projectNewCaptures(admin, userId, outcome.created, "telegram");
-
-  const lines = outcome.created.map((c) => {
-    const due = c.due_at ? ` (due ${c.due_at.slice(0, 10)})` : "";
-    return `• ${c.item.type}: ${c.item.title}${due}`;
-  });
-  const reply =
-    outcome.created.length > 1
-      ? `🧠 Saved ${outcome.created.length} separate items:\n${lines.join("\n")}`
-      : `🧠 Saved:\n${lines.join("\n")}`;
-
-  await sendMessage(reply, {
-    parse_mode: "plain",
-    reply_markup: outcome.created.length
-      ? {
-          inline_keyboard: outcome.created
-            .slice(0, 5)
-            .map((c) => [
-              { text: `↩ Undo ${c.item.title.slice(0, 30)}`, callback_data: `undo:${c.item.id}` },
-            ]),
-        }
-      : undefined,
-  });
-  await recordTurn(admin, userId, "assistant", reply);
-  void pruneConversation(admin, userId);
-}
-
-// Quietly retire a superseded capture proposal (no owner-facing message).
-async function rejectCaptureProposalById(
-  admin: SupabaseClient,
-  userId: string,
-  proposalId: string
-): Promise<void> {
-  await admin
-    .from("proposals")
-    .update({ status: "rejected", decided_at: new Date().toISOString() })
-    .eq("id", proposalId)
-    .eq("user_id", userId)
-    .eq("status", "pending");
-}
-
 // ---- v4.2: "put that on my ClickUp board" -------------------------------------
-
-// An EXPLICIT instruction to project something onto the task board.
-//
-// This creates the ClickUp task immediately rather than asking for approval,
-// and that is deliberate: propose-approve exists to gate what the system
-// INFERRED, not what the owner just directly told it to do. Making someone
-// confirm the thing they asked for one second ago is friction pretending to be
-// safety. Every other ClickUp path (the morning projection, inbound email)
-// still proposes, because those are the system's judgement, not the owner's.
-//
-// Two shapes: naming an item already in the brain projects that one; anything
-// else is captured as a new task first, so the board and the brain never
-// disagree about what exists.
-async function handleClickUp(
-  admin: SupabaseClient,
-  userId: string,
-  target: string,
-  /** A project/course the owner named ("as a CANVAS task"). Sharpens the search
-   *  and tags whatever gets created. */
-  namedContext = ""
-): Promise<void> {
-  if (!clickupConfigured()) {
-    await sendMessage("ClickUp isn't configured — no API token set.", { parse_mode: "plain" });
-    return;
-  }
-
-  // Does this refer to something already captured? The named context goes into
-  // the query on purpose: "resume" alone missed the existing "Canvas — resume",
-  // while "canvas resume" finds it. The grouping the owner named is signal, not
-  // filler to be stripped out.
-  const searchFor = namedContext ? `${namedContext} ${target}` : target;
-  const matches = await resolveMatches(admin, userId, searchFor, "open");
-  const top = matches[0]?.similarity ?? 0;
-  const cluster = matches.filter((m) => m.similarity >= top - COMPLETE_MARGIN);
-
-  if (matches.length && top >= COMPLETE_STRONG && cluster.length === 1) {
-    await pushItemToClickUp(admin, userId, cluster[0].id);
-    return;
-  }
-
-  if (matches.length && top >= COMPLETE_STRONG && cluster.length > 1) {
-    await sendMessage("Which one should go on the board?", {
-      parse_mode: "plain",
-      reply_markup: {
-        inline_keyboard: cluster.slice(0, 5).map((m) => [
-          { text: `📋 ${m.title.slice(0, 40)}`, callback_data: `cu:${m.id}` },
-        ]),
-      },
-    });
-    return;
-  }
-
-  // Nothing matched — treat it as a new task. Captured first so the brain
-  // stays the source of truth and the board stays a projection of it.
-  // Carry the named context into BOTH the content and a filing instruction.
-  // Measured: the directive alone isn't enough — "resume" on its own is too
-  // thin to title, so it came back as "Untitled capture" with no tags however
-  // the instruction was phrased. Prefixing the content ("canvas: resume")
-  // gives the pipeline something real to work with, and then the tag lands.
-  // "going onto a task board" is stated because otherwise the same input types
-  // as `reference`, which is wrong for something the owner is putting on a
-  // kanban.
-  const directive = namedContext
-    ? `This belongs to "${namedContext}". Add "${namedContext}" as the free-form tag and ` +
-      `work it into the title. It is going onto a task board, so type it as a task.`
-    : "";
-  const captureBody = namedContext ? `${namedContext}: ${target}` : target;
-  const outcome = await captureText(userId, captureBody, "telegram", directive);
-  const created = outcome.created[0];
-  if (!created) {
-    await sendMessage("Couldn't work out what to add — try naming the task.", { parse_mode: "plain" });
-    return;
-  }
-
-  // If the pipeline couldn't write a real title, the input was too thin to
-  // make a task out of ("resume"). Putting "Untitled capture" on the board
-  // would be exactly the half-baked output the design laws forbid — so undo
-  // the capture and ask which existing item was meant instead.
-  if (created.item.title === UNTITLED_TITLE) {
-    await undoItem(admin, userId, created.item.id);
-    await offerItemsForClickUp(admin, userId, searchFor);
-    return;
-  }
-
-  await pushItemToClickUp(admin, userId, created.item.id);
-}
-
-// Couldn't resolve what the owner meant — let them tap it, the same pattern
-// handleComplete uses. Better one extra tap than a wrong task on the board.
-async function offerItemsForClickUp(
-  admin: SupabaseClient,
-  userId: string,
-  target: string
-): Promise<void> {
-  const { data: recent } = await admin
-    .from("items")
-    .select("id, title, external")
-    .eq("user_id", userId)
-    .eq("status", "open")
-    .is("valid_to", null)
-    .order("created_at", { ascending: false })
-    .limit(8);
-  const open = (recent ?? []).filter(
-    (r) => !(r.external as { clickup?: { id?: string } } | null)?.clickup?.id
-  );
-  if (!open.length) {
-    await sendMessage(
-      `I couldn't tell what “${target}” refers to, and there's nothing open to add. Try naming the task in full.`,
-      { parse_mode: "plain" }
-    );
-    return;
-  }
-  const prompt = `I wasn't sure what “${target}” meant. Which should go on the board?`;
-  await recordTurn(admin, userId, "assistant", prompt);
-  await sendMessage(prompt, {
-    parse_mode: "plain",
-    reply_markup: {
-      inline_keyboard: open.slice(0, 6).map((m) => [
-        { text: `📋 ${(m.title as string).slice(0, 40)}`, callback_data: `cu:${m.id}` },
-      ]),
-    },
-  });
-}
 
 // Create the ClickUp task for one item and report back with its link.
 async function pushItemToClickUp(
@@ -960,53 +824,6 @@ async function rateLetter(
   }
 }
 
-/**
- * "Tell me more about the oil story."
- *
- * Deliberately NOT routed through Ask. Ask searches the owner's own notes, and
- * the news was never captured into the brain — so a briefing follow-up would
- * correctly retrieve nothing and read as a broken assistant. This re-searches
- * the web with the morning's digest as context, so a vague reference ("the oil
- * one") still resolves to the right story.
- */
-async function runNewsDeepDive(
-  admin: SupabaseClient,
-  userId: string,
-  question: string
-): Promise<void> {
-  const tz = await resolveOwnerTz(admin, userId).catch(() => process.env.BRIEF_TZ || "America/Vancouver");
-  const localDate = localDateStr(tz);
-  // Cached on the owner's local date, so this costs nothing beyond the
-  // follow-up itself and quotes exactly what he read this morning.
-  const { digest } = await getDailyBriefing(admin, userId, localDate);
-
-  const { answer, sources, usage, error } = await explainStory(question, digest);
-  if (usage) await logLlmUsage(admin, userId, "news_deep_dive", usage);
-
-  if (!answer) {
-    await sendMessage(
-      `Couldn't look that up just now${error ? ` (${error})` : ""}. Try again in a moment.`,
-      { parse_mode: "plain" }
-    );
-    return;
-  }
-  const reply = stripMarkdown(answer) + (sources.length ? `\n\nvia ${sources.join(" · ")}` : "");
-  await sendMessage(reply, { parse_mode: "plain" });
-  await recordTurn(admin, userId, "assistant", reply);
-  void pruneConversation(admin, userId);
-}
-
-async function runAsk(admin: SupabaseClient, userId: string, question: string): Promise<void> {
-  const { answer, sources } = await answerQuestion(userId, question);
-  let reply = stripMarkdown(answer);
-  if (sources.length) {
-    reply += `\n\n📎 Sources:\n${sources.slice(0, 5).map((s) => `[${s.n}] ${s.title}`).join("\n")}`;
-  }
-  await sendMessage(reply, { parse_mode: "plain" });
-  await recordTurn(admin, userId, "assistant", reply);
-  void pruneConversation(admin, userId);
-}
-
 // Telegram messages are sent as plain text (dynamic/LLM content can't be trusted
 // to be valid Markdown), so strip the markdown the model emits for a clean look.
 function stripMarkdown(s: string): string {
@@ -1026,149 +843,9 @@ function stripMarkdown(s: string): string {
 // MEASURED 2026-07-28 for text-embedding-3-large @1024d (scripts/measure-similarity.mjs
 // over the retrieval set, N=29): STRONG = NN p50 = 0.478; MARGIN = 0.15 * (1 -
 // all-pairs mean 0.232) = 0.115.
-const COMPLETE_STRONG = 0.478;
-const COMPLETE_MARGIN = 0.115;
-
-// Complete a specific item the owner reported as done. Resolves their phrasing to
-// open items semantically. Clear winner -> do it (with Undo); a close cluster ->
-// let them pick; nothing convincing -> offer recent open items to tap.
-async function handleComplete(admin: SupabaseClient, userId: string, target: string): Promise<void> {
-  const matches = await resolveMatches(admin, userId, target, "open");
-  const top = matches[0]?.similarity ?? 0;
-
-  if (matches.length && top >= COMPLETE_STRONG) {
-    const cluster = matches.filter((m) => m.similarity >= top - COMPLETE_MARGIN);
-    if (cluster.length === 1) {
-      const title = await markDoneById(admin, userId, cluster[0].id);
-      await sendMessage(title ? `✓ Done: ${title}` : "Couldn't mark that done.", {
-        parse_mode: "plain",
-        reply_markup: title
-          ? { inline_keyboard: [[{ text: "↩ Undo", callback_data: `reopen:${cluster[0].id}` }]] }
-          : undefined,
-      });
-      return;
-    }
-    await sendMessage("Which one did you finish?", {
-      parse_mode: "plain",
-      reply_markup: {
-        inline_keyboard: cluster.slice(0, 5).map((m) => [
-          { text: `✓ ${m.title.slice(0, 40)}`, callback_data: `done:${m.id}` },
-        ]),
-      },
-    });
-    return;
-  }
-
-  // No convincing match — let the owner tap the one they mean.
-  const { data: recent } = await admin
-    .from("items")
-    .select("id, title")
-    .eq("user_id", userId)
-    .eq("status", "open")
-    .is("valid_to", null)
-    .order("created_at", { ascending: false })
-    .limit(6);
-  const open = recent ?? [];
-  if (open.length === 0) {
-    await sendMessage("You have no open items to complete.", { parse_mode: "plain" });
-    return;
-  }
-  await sendMessage(`I wasn't sure which you meant by “${target}”. Tap the one you finished:`, {
-    parse_mode: "plain",
-    reply_markup: {
-      inline_keyboard: open.map((m) => [
-        { text: `✓ ${m.title.slice(0, 40)}`, callback_data: `done:${m.id}` },
-      ]),
-    },
-  });
-}
-
-// Put a completed item back to open. Same standout-match logic as complete.
-async function handleReopen(admin: SupabaseClient, userId: string, target: string): Promise<void> {
-  const matches = await resolveMatches(admin, userId, target, "done");
-  const top = matches[0]?.similarity ?? 0;
-
-  if (matches.length && top >= COMPLETE_STRONG) {
-    const cluster = matches.filter((m) => m.similarity >= top - COMPLETE_MARGIN);
-    if (cluster.length === 1) {
-      const title = await reopenById(admin, userId, cluster[0].id);
-      await sendMessage(title ? `↩ Reopened: ${title}` : "Couldn't reopen that.", {
-        parse_mode: "plain",
-      });
-      return;
-    }
-    await sendMessage("Which one should I reopen?", {
-      parse_mode: "plain",
-      reply_markup: {
-        inline_keyboard: cluster.slice(0, 5).map((m) => [
-          { text: `↩ ${m.title.slice(0, 40)}`, callback_data: `reopen:${m.id}` },
-        ]),
-      },
-    });
-    return;
-  }
-
-  const { data: recent } = await admin
-    .from("items")
-    .select("id, title")
-    .eq("user_id", userId)
-    .eq("status", "done")
-    .is("valid_to", null)
-    .order("created_at", { ascending: false })
-    .limit(6);
-  const done = recent ?? [];
-  if (done.length === 0) {
-    await sendMessage("You have no completed items to reopen.", { parse_mode: "plain" });
-    return;
-  }
-  await sendMessage(`I wasn't sure which you meant by “${target}”. Tap the one to reopen:`, {
-    parse_mode: "plain",
-    reply_markup: {
-      inline_keyboard: done.map((m) => [
-        { text: `↩ ${m.title.slice(0, 40)}`, callback_data: `reopen:${m.id}` },
-      ]),
-    },
-  });
-}
 
 // ---- data helpers -----------------------------------------------------------
 
-type Match = { id: string; title: string; similarity: number };
-
-// Semantic search for the owner's items in a given status ('open' | 'done')
-// matching a natural-language target, sorted by similarity (desc). Thresholding
-// is the caller's job.
-async function resolveMatches(
-  admin: SupabaseClient,
-  userId: string,
-  target: string,
-  status: "open" | "done"
-): Promise<Match[]> {
-  const q = target.trim();
-  if (!q) return [];
-  const embedding = await embedText(q);
-  const { data: neigh } = await admin.rpc("match_neighbors_v2", {
-    query_embedding: embedding,
-    owner: userId,
-    exclude_id: null,
-    match_count: 10,
-  });
-  const cands = (neigh ?? []) as { id: string; similarity: number }[];
-  if (cands.length === 0) return [];
-  const ids = cands.map((n) => n.id);
-  const { data: rows } = await admin
-    .from("items")
-    .select("id, title")
-    .eq("user_id", userId)
-    .eq("status", status)
-    .is("valid_to", null)
-    .in("id", ids);
-  const byId = new Map((rows ?? []).map((r) => [r.id, r.title as string]));
-  return cands
-    .filter((n) => byId.has(n.id))
-    .map((n) => ({ id: n.id, title: byId.get(n.id)!, similarity: n.similarity }))
-    .sort((a, b) => b.similarity - a.similarity);
-}
 
 // Flip a specific item open -> done (owner-scoped). Returns the title or null.
 async function markDoneById(
@@ -1249,41 +926,6 @@ async function undoItem(
 }
 
 // ---- bulk complete (the one big/risky action, gated by Yes/No) --------------
-
-async function promptBulkDone(admin: SupabaseClient, userId: string): Promise<void> {
-  const { data: tasks } = await admin
-    .from("items")
-    .select("id, title")
-    .eq("user_id", userId)
-    .eq("status", "open")
-    .is("valid_to", null)
-    .eq("type", "task")
-    .neq("source", "apple-notes") // never sweep up imported historical archive
-    .order("created_at", { ascending: false })
-    .limit(50);
-
-  const open = tasks ?? [];
-  if (open.length === 0) {
-    await sendMessage("No open tasks to complete.", { parse_mode: "plain" });
-    return;
-  }
-  const shown = open.slice(0, 20).map((t) => `• ${t.title}`).join("\n");
-  const more = open.length > 20 ? `\n…and ${open.length - 20} more` : "";
-  await sendMessage(
-    `Mark all ${open.length} open task${open.length === 1 ? "" : "s"} done?\n${shown}${more}`,
-    {
-      parse_mode: "plain",
-      reply_markup: {
-        inline_keyboard: [
-          [
-            { text: `✅ Yes, complete ${open.length}`, callback_data: "doneall" },
-            { text: "✖ No", callback_data: "cancel" },
-          ],
-        ],
-      },
-    }
-  );
-}
 
 async function markAllTasksDone(admin: SupabaseClient, userId: string): Promise<number> {
   const { data: updated } = await admin

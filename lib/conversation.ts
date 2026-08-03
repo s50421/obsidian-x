@@ -29,6 +29,16 @@ export type Turn = {
 
 /** How many turns to feed the intent model. */
 export const CONTEXT_TURNS = 10;
+
+/**
+ * How much history the agent loop sees (v4.2.3).
+ *
+ * Deeper than the old router's window because the loop reasons over the
+ * exchange rather than classifying one message: "add all three to ClickUp"
+ * needs the turn where three things were saved, which can be several turns
+ * back once the bot has confirmed each one.
+ */
+export const AGENT_CONTEXT_TURNS = 15;
 /**
  * How long a turn stays relevant. A follow-up arrives within a few minutes; a
  * message hours later is a new topic, and treating it as a continuation would

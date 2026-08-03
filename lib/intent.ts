@@ -167,3 +167,74 @@ function clamp01(n: number): number {
   if (!Number.isFinite(n)) return NaN;
   return Math.min(1, Math.max(0, n));
 }
+
+// ---- v4.2.3: the router's last remaining job ---------------------------------
+//
+// The intent router is gone. An agent loop with tools handles anything
+// conversational, because picking ONE handler from one message is what broke:
+// "are these in ClickUp?" needs a referent resolved AND structured data read,
+// and a router can only ever choose one path.
+//
+// What is still worth deciding cheaply is a single binary: is this a pure
+// CAPTURE (a braindump, a voice note, something to remember) or a CONVERSATION
+// (a question, an instruction, a follow-up)? Captures keep the fast classify/
+// split pipeline — no tool loop, no latency, no cost. Everything else goes to
+// the agent.
+
+export type TurnKind = "capture" | "conversation";
+
+/** Cheap, deterministic pre-checks so the obvious cases cost nothing at all. */
+export function obviousKind(text: string): TurnKind | null {
+  const t = text.trim();
+  if (!t) return null;
+  // A question mark is the single most reliable conversational tell.
+  if (t.includes("?")) return "conversation";
+  // Referential pronouns with no antecedent in this message mean the owner is
+  // continuing something — the exact case the old router mishandled.
+  if (/\b(these|those|them|it|that one|all three|all of them|the first one)\b/i.test(t)) {
+    return "conversation";
+  }
+  // Direct address / instructions to the assistant.
+  if (/^(add|put|move|mark|change|update|delete|remove|show|list|check|tell me|what|when|where|which|who|why|how|are|is|do|does|can you|could you|draft|write)\b/i.test(t)) {
+    return "conversation";
+  }
+  return null;
+}
+
+export async function classifyTurn(
+  text: string,
+  hasRecentConversation: boolean
+): Promise<{ kind: TurnKind; usage: Usage | null }> {
+  const obvious = obviousKind(text);
+  if (obvious) return { kind: obvious, usage: null };
+
+  const model = process.env.OPENROUTER_CLASSIFY_MODEL!;
+  const system =
+    `Decide ONE thing about a message the owner sent his second-brain assistant.\n` +
+    `Return ONLY {"kind":"capture"} or {"kind":"conversation"}.\n\n` +
+    `"capture" — he is dumping something to remember: a note, an idea, one or more to-dos, a ` +
+    `braindump, a transcribed voice memo. No question, no instruction to the assistant. This is ` +
+    `the DEFAULT for plain declarative text.\n` +
+    `"conversation" — a question, a request to look something up or change something, a follow-up ` +
+    `to what was just said, or anything referring to earlier context.\n` +
+    (hasRecentConversation
+      ? `There IS a recent exchange, so a short or elliptical message is more likely a follow-up.\n`
+      : `There is no recent exchange, so a bare statement is almost certainly a capture.\n`);
+
+  try {
+    const { content, usage } = await chat(
+      model,
+      [
+        { role: "system", content: system },
+        { role: "user", content: text },
+      ],
+      { json: true, temperature: 0 }
+    );
+    const p = extractJson<{ kind?: string }>(content);
+    return { kind: p.kind === "conversation" ? "conversation" : "capture", usage };
+  } catch {
+    // A classifier failure must not eat the message. Capture is the safe
+    // default: the worst case is a note he deletes, not a lost thought.
+    return { kind: "capture", usage: null };
+  }
+}

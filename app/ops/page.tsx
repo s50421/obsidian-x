@@ -23,6 +23,7 @@ import Corrections from "./Corrections";
 import { buildCorrectionReport } from "@/lib/corrections";
 import LinkLearning from "./LinkLearning";
 import { loadModel } from "@/lib/link-model";
+import AgentCost, { type AgentTurnStat } from "./AgentCost";
 import { buildScorecard } from "@/lib/scorecard";
 import {
   ensureDeclaredSources,
@@ -210,6 +211,26 @@ export default async function OpsPage({
   const corrections = await buildCorrectionReport(admin, uid);
   const linkModel = await loadModel(admin, uid);
 
+  // v4.2.3 — agent turn cost. Read from the audit rows the loop writes, which
+  // carry the step count and tool names the raw llm_usage row cannot.
+  const { data: agentRows } = await admin
+    .from("audit")
+    .select("detail,created_at")
+    .eq("user_id", uid)
+    .eq("action", "agent_turn")
+    .order("created_at", { ascending: false })
+    .limit(30);
+  const agentTurns: AgentTurnStat[] = (agentRows ?? []).map((r) => {
+    const d = (r.detail ?? {}) as Record<string, unknown>;
+    return {
+      cost_usd: typeof d.cost_usd === "number" ? d.cost_usd : 0,
+      steps: typeof d.steps === "number" ? d.steps : 0,
+      tools: Array.isArray(d.tools) ? (d.tools as string[]) : [],
+      at: r.created_at as string,
+      timedOut: d.timedOut === true,
+    };
+  });
+
   const startToday = new Date();
   startToday.setHours(0, 0, 0, 0);
   const sum = (rows: UsageRow[], f: (r: UsageRow) => number) => rows.reduce((a, r) => a + f(r), 0);
@@ -278,6 +299,8 @@ export default async function OpsPage({
           <DataQuality stats={dq} />
 
           <LinkLearning model={linkModel} />
+
+          <AgentCost turns={agentTurns} />
 
           <MailTuning lowConfidence={lowConfidence} recent={recentInflow} />
 
