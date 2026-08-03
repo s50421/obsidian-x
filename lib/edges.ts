@@ -24,7 +24,16 @@ export type EdgeKind =
   | "shared_topic"
   | "reference"
   | "thread"
-  | "similar";
+  | "similar"
+  // Owner ask 2026-08-02: "more ways to show connections e.g. same task".
+  // These are all FACTS about the items rather than guesses, so they are
+  // confirmed on sight like a shared entity — no approval step.
+  /** Both items are projected onto the same ClickUp task. */
+  | "same_task"
+  /** Both fall due on the same day. */
+  | "same_due_date"
+  /** The owner drew this connection by hand. */
+  | "manual";
 
 export type EdgeStatus = "confirmed" | "suggested" | "dismissed";
 
@@ -200,6 +209,136 @@ export function deriveTopicEdges(): Edge[] {
   return [];
 }
 
+export type TaskItem = {
+  id: string;
+  title: string;
+  due_at: string | null;
+  external: { clickup?: { id?: string; url?: string } } | null;
+};
+
+/**
+ * Two items pinned to the SAME ClickUp task.
+ *
+ * The strongest connection the system can assert without a model: the owner (or
+ * the projection) put both of these against one piece of work. Confirmed on
+ * sight — there is no judgement to make.
+ */
+export function deriveSameTaskEdges(items: TaskItem[]): Edge[] {
+  const byTask = new Map<string, TaskItem[]>();
+  for (const i of items) {
+    const id = i.external?.clickup?.id;
+    if (!id) continue;
+    const arr = byTask.get(id) ?? [];
+    arr.push(i);
+    byTask.set(id, arr);
+  }
+
+  const out: Edge[] = [];
+  for (const [, group] of byTask) {
+    if (group.length < 2) continue;
+    for (let i = 0; i < group.length; i++) {
+      for (let j = i + 1; j < group.length; j++) {
+        const [src, dst] = orderPair(group[i].id, group[j].id);
+        if (src === dst) continue;
+        out.push({
+          src,
+          dst,
+          kind: "same_task",
+          reason: "both on the same ClickUp task",
+          weight: 1,
+          entity_id: null,
+          discovery: false,
+          status: "confirmed",
+        });
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Two items due on the same DAY.
+ *
+ * Weak on its own, but it is the connection the owner actually acts on — "what
+ * else is landing on Sunday?" is a real question, and nothing else in the graph
+ * could answer it. Capped: a date shared by a large slice of the corpus is a
+ * busy week, not a relationship.
+ */
+export function deriveSameDueDateEdges(items: TaskItem[], maxPerDay = 4): Edge[] {
+  const byDay = new Map<string, TaskItem[]>();
+  for (const i of items) {
+    if (!i.due_at) continue;
+    const day = i.due_at.slice(0, 10);
+    const arr = byDay.get(day) ?? [];
+    arr.push(i);
+    byDay.set(day, arr);
+  }
+
+  const out: Edge[] = [];
+  for (const [day, group] of byDay) {
+    if (group.length < 2 || group.length > maxPerDay) continue;
+    const pretty = new Date(`${day}T12:00:00Z`).toLocaleDateString("en-US", {
+      weekday: "long",
+      month: "short",
+      day: "numeric",
+      timeZone: "UTC",
+    });
+    for (let i = 0; i < group.length; i++) {
+      for (let j = i + 1; j < group.length; j++) {
+        const [src, dst] = orderPair(group[i].id, group[j].id);
+        if (src === dst) continue;
+        out.push({
+          src,
+          dst,
+          kind: "same_due_date",
+          reason: `both due ${pretty}`,
+          weight: 0.7,
+          entity_id: null,
+          discovery: false,
+          status: "confirmed",
+        });
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * One item's text names another item's TITLE.
+ *
+ * Obsidian's unlinked-mention idea applied to notes rather than entities: if a
+ * memory literally refers to another memory, that is a stated connection, not
+ * an inference. Titles under 12 characters are skipped — "RBC checks" would
+ * match half the corpus.
+ */
+export function deriveReferenceEdges(
+  items: { id: string; title: string; body: string | null }[]
+): Edge[] {
+  const out: Edge[] = [];
+  const candidates = items.filter((i) => (i.title ?? "").trim().length >= 12);
+
+  for (const target of candidates) {
+    const title = target.title.trim();
+    const re = new RegExp(`(^|[^\\p{L}\\p{N}])${escapeRe(title)}([^\\p{L}\\p{N}]|$)`, "iu");
+    for (const source of items) {
+      if (source.id === target.id) continue;
+      if (!re.test(`${source.title ?? ""}\n${source.body ?? ""}`)) continue;
+      const [src, dst] = orderPair(source.id, target.id);
+      out.push({
+        src,
+        dst,
+        kind: "reference",
+        reason: `"${source.title}" mentions "${title}"`,
+        weight: 0.9,
+        entity_id: null,
+        discovery: false,
+        status: "confirmed",
+      });
+    }
+  }
+  return out;
+}
+
 /**
  * SUGGESTED links from embedding similarity, by mutual rank.
  *
@@ -347,12 +486,14 @@ export async function rebuildEdges(
 }> {
   const { data: allItems } = await admin
     .from("items")
-    .select("id,title,body,tags,source")
+    .select("id,title,body,tags,source,due_at,external")
     .eq("user_id", userId)
     .neq("status", "archived")
     .is("valid_to", null)
     .limit(2000);
-  const items = edgeEligibleItems((allItems ?? []) as (ItemRow & { body: string | null })[]);
+  const items = edgeEligibleItems(
+    (allItems ?? []) as (ItemRow & { body: string | null; due_at: string | null; external: TaskItem["external"] })[]
+  );
 
   const { data: entities } = await admin
     .from("entities")
@@ -374,6 +515,14 @@ export async function rebuildEdges(
     .select("src,dst,kind,status")
     .eq("user_id", userId)
     .in("status", ["dismissed", "confirmed"]);
+
+  // Connections the owner drew by hand are not derived from anything, so a
+  // rebuild would simply delete them. They are re-added verbatim.
+  const { data: manual } = await admin
+    .from("edges")
+    .select("src,dst,kind,reason,weight,entity_id,discovery,status")
+    .eq("user_id", userId)
+    .eq("kind", "manual");
   const verdict = new Map<string, string>();
   for (const r of ruled ?? []) verdict.set(`${r.src}|${r.dst}|${r.kind}`, r.status as string);
 
@@ -394,13 +543,18 @@ export async function rebuildEdges(
     liveLinks.push({ item_id: m.itemId, entity_id: m.entityId, raw_name: m.matched });
   }
 
+  const taskItems = items as unknown as TaskItem[];
   const derived = [
     ...deriveEntityEdges((entities ?? []) as EntityRow[], liveLinks),
     ...deriveTopicEdges(),
+    // Facts about the items, not guesses — confirmed on sight.
+    ...deriveSameTaskEdges(taskItems),
+    ...deriveSameDueDateEdges(taskItems),
+    ...deriveReferenceEdges(items.map((i) => ({ id: i.id, title: i.title, body: i.body }))),
     ...(opts.includeSimilar ? await deriveSimilarSuggestions(admin, userId, items) : []),
   ];
 
-  const final = dedupeEdges(derived)
+  const final = dedupeEdges([...derived, ...((manual ?? []) as unknown as Edge[])])
     .map((e) => {
       const v = verdict.get(`${e.src}|${e.dst}|${e.kind}`);
       if (v === "dismissed") return { ...e, status: "dismissed" as EdgeStatus };
