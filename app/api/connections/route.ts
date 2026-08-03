@@ -104,7 +104,17 @@ export async function POST(req: Request) {
   }
 
   const status = action === "confirm" ? "confirmed" : "dismissed";
-  await admin.from("edges").update({ status }).eq("id", id).eq("user_id", user.id);
+
+  // A confirmed suggestion is no longer a guess, so it must stop describing
+  // itself as one. A similarity reason carries the caveat "not a stated
+  // connection" — true while it is only offered, false the moment the owner
+  // stands behind it.
+  const patch: Record<string, unknown> = { status };
+  if (action === "confirm" && (edge.reason as string)?.includes("not a stated connection")) {
+    const pct = (edge.reason as string).match(/\((\d+)% match\)/)?.[1];
+    patch.reason = pct ? `you linked these — they read alike (${pct}% match)` : "you linked these";
+  }
+  await admin.from("edges").update(patch).eq("id", id).eq("user_id", user.id);
 
   await logAudit(admin, {
     user_id: user.id,
